@@ -343,3 +343,52 @@ class MemoryEngine:
         """Ensure a specific entity is indexed (call after mutations)."""
         if self._vector_index is not None and entity_id in self.state.entities:
             self._vector_index.index_entity(self.state.entities[entity_id])
+
+    # --- Phase 4: Tiered retrieval ---
+
+    def memory_context(
+        self,
+        depth: str = "shallow",
+        query: str | None = None,
+        focus: list[str] | None = None,
+        max_tokens: int | None = None,
+    ) -> dict:
+        """Get memory context at varying depth levels.
+
+        Args:
+            depth: 'shallow' (summary), 'medium' (search + neighbors), 'deep' (multi-hop)
+            query: Search query for medium depth (uses semantic search)
+            focus: Entity names to focus on
+            max_tokens: Token budget (defaults vary by depth)
+
+        Returns:
+            Dict with depth, tokens_estimate, content, entity_count, relation_count
+        """
+        from .retrieval import get_shallow_context, get_medium_context, get_deep_context
+
+        if depth == "shallow":
+            tokens = max_tokens or 500
+            result = get_shallow_context(self.state, tokens)
+
+        elif depth == "medium":
+            tokens = max_tokens or 2000
+            # Get vector search results if query provided
+            vector_results = None
+            if query:
+                vector_results = self.vector_index.search(query, limit=10)
+            result = get_medium_context(self.state, vector_results, focus, tokens)
+
+        elif depth == "deep":
+            tokens = max_tokens or 5000
+            result = get_deep_context(self.state, focus, tokens)
+
+        else:
+            raise ValueError(f"Invalid depth: {depth}. Use 'shallow', 'medium', or 'deep'.")
+
+        return {
+            "depth": result.depth,
+            "tokens_estimate": result.tokens_estimate,
+            "content": result.content,
+            "entity_count": result.entity_count,
+            "relation_count": result.relation_count,
+        }

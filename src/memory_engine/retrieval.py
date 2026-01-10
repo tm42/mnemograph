@@ -1,0 +1,290 @@
+"""Tiered context retrieval for memory queries.
+
+Three depth levels:
+- shallow: summary stats, recent entities, hot topics (~500 tokens)
+- medium: vector search results + 1-hop neighbors (~2000 tokens)
+- deep: multi-hop subgraph from focus entities (~5000 tokens)
+"""
+
+from dataclasses import dataclass
+
+from .models import Entity, Relation
+from .state import GraphState
+
+
+@dataclass
+class ContextResult:
+    """Result of a context retrieval operation."""
+    depth: str  # 'shallow' | 'medium' | 'deep'
+    tokens_estimate: int
+    content: str
+    entity_count: int
+    relation_count: int
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars per token)."""
+    return len(text) // 4
+
+
+def get_shallow_context(state: GraphState, max_tokens: int = 500) -> ContextResult:
+    """Summary stats, recent entities, hot topics.
+
+    Cheap and fast — good for "what do I know about?" queries.
+    """
+    entity_count = len(state.entities)
+    relation_count = len(state.relations)
+
+    if entity_count == 0:
+        content = "## Memory Summary\nNo entities stored yet."
+        return ContextResult(
+            depth="shallow",
+            tokens_estimate=estimate_tokens(content),
+            content=content,
+            entity_count=0,
+            relation_count=0,
+        )
+
+    # Recent entities (by updated_at)
+    recent = sorted(
+        state.entities.values(),
+        key=lambda e: e.updated_at,
+        reverse=True,
+    )[:5]
+
+    # Most accessed
+    hot = sorted(
+        state.entities.values(),
+        key=lambda e: e.access_count,
+        reverse=True,
+    )[:5]
+
+    # Entity type breakdown
+    type_counts: dict[str, int] = {}
+    for e in state.entities.values():
+        type_counts[e.type] = type_counts.get(e.type, 0) + 1
+
+    lines = [
+        "## Memory Summary",
+        f"- {entity_count} entities, {relation_count} relations",
+        "",
+        "### Entity Types",
+    ]
+    for etype, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+        lines.append(f"- {etype}: {count}")
+
+    lines.extend([
+        "",
+        "### Recently Updated",
+    ])
+    for e in recent:
+        obs_preview = e.observations[0].text[:50] + "..." if e.observations else ""
+        lines.append(f"- **{e.name}** ({e.type}): {obs_preview}")
+
+    if any(e.access_count > 0 for e in hot):
+        lines.extend([
+            "",
+            "### Frequently Accessed",
+        ])
+        for e in hot:
+            if e.access_count > 0:
+                lines.append(f"- **{e.name}**: {e.access_count} accesses")
+
+    content = "\n".join(lines)
+
+    # Truncate if over budget
+    while estimate_tokens(content) > max_tokens and len(lines) > 5:
+        lines.pop()
+        content = "\n".join(lines)
+
+    return ContextResult(
+        depth="shallow",
+        tokens_estimate=estimate_tokens(content),
+        content=content,
+        entity_count=min(10, entity_count),
+        relation_count=0,
+    )
+
+
+def get_medium_context(
+    state: GraphState,
+    vector_search_results: list[tuple[str, float]] | None = None,
+    focus: list[str] | None = None,
+    max_tokens: int = 2000,
+) -> ContextResult:
+    """Vector search results + 1-hop neighbors.
+
+    Good for targeted queries about specific topics.
+    """
+    entities: list[Entity] = []
+    seen_ids: set[str] = set()
+
+    # Start with focused entities
+    if focus:
+        for name in focus:
+            entity = _find_entity_by_name(state, name)
+            if entity and entity.id not in seen_ids:
+                entities.append(entity)
+                seen_ids.add(entity.id)
+
+    # Add vector search results
+    if vector_search_results:
+        for entity_id, _score in vector_search_results:
+            if entity_id in state.entities and entity_id not in seen_ids:
+                entities.append(state.entities[entity_id])
+                seen_ids.add(entity_id)
+
+    # Expand with 1-hop neighbors
+    neighbor_ids: set[str] = set()
+    for entity in list(entities):  # Copy to avoid mutation during iteration
+        for r in state.relations:
+            if r.from_entity == entity.id and r.to_entity not in seen_ids:
+                neighbor_ids.add(r.to_entity)
+            elif r.to_entity == entity.id and r.from_entity not in seen_ids:
+                neighbor_ids.add(r.from_entity)
+
+    for nid in neighbor_ids:
+        if nid in state.entities:
+            entities.append(state.entities[nid])
+            seen_ids.add(nid)
+
+    # Format output
+    content = _format_entities_with_relations(state, entities, seen_ids, max_tokens)
+
+    return ContextResult(
+        depth="medium",
+        tokens_estimate=estimate_tokens(content),
+        content=content,
+        entity_count=len(entities),
+        relation_count=len([r for r in state.relations
+                          if r.from_entity in seen_ids or r.to_entity in seen_ids]),
+    )
+
+
+def get_deep_context(
+    state: GraphState,
+    focus: list[str] | None = None,
+    max_tokens: int = 5000,
+    max_hops: int = 3,
+) -> ContextResult:
+    """Multi-hop subgraph extraction.
+
+    Comprehensive context for complex queries.
+    """
+    if not focus:
+        # No focus = return recent entities with their subgraphs
+        recent = sorted(
+            state.entities.values(),
+            key=lambda e: e.updated_at,
+            reverse=True,
+        )[:10]
+        focus = [e.name for e in recent]
+
+    # BFS from focus entities
+    seen_ids: set[str] = set()
+    entities: list[Entity] = []
+
+    for name in focus:
+        entity = _find_entity_by_name(state, name)
+        if entity:
+            neighbors = _get_neighbors_bfs(state, entity.id, max_hops)
+            for e in neighbors:
+                if e.id not in seen_ids:
+                    entities.append(e)
+                    seen_ids.add(e.id)
+
+    # Format with full details
+    content = _format_entities_with_relations(state, entities, seen_ids, max_tokens, verbose=True)
+
+    return ContextResult(
+        depth="deep",
+        tokens_estimate=estimate_tokens(content),
+        content=content,
+        entity_count=len(entities),
+        relation_count=len([r for r in state.relations
+                          if r.from_entity in seen_ids and r.to_entity in seen_ids]),
+    )
+
+
+def _find_entity_by_name(state: GraphState, name: str) -> Entity | None:
+    """Find entity by name."""
+    for e in state.entities.values():
+        if e.name == name:
+            return e
+    return None
+
+
+def _get_neighbors_bfs(state: GraphState, entity_id: str, max_hops: int) -> list[Entity]:
+    """BFS to find neighbors within N hops."""
+    visited: set[str] = {entity_id}
+    frontier: list[str] = [entity_id]
+    result: list[Entity] = []
+
+    if entity_id in state.entities:
+        result.append(state.entities[entity_id])
+
+    for _ in range(max_hops):
+        next_frontier: list[str] = []
+        for eid in frontier:
+            for r in state.relations:
+                if r.from_entity == eid and r.to_entity not in visited:
+                    visited.add(r.to_entity)
+                    next_frontier.append(r.to_entity)
+                    if r.to_entity in state.entities:
+                        result.append(state.entities[r.to_entity])
+                elif r.to_entity == eid and r.from_entity not in visited:
+                    visited.add(r.from_entity)
+                    next_frontier.append(r.from_entity)
+                    if r.from_entity in state.entities:
+                        result.append(state.entities[r.from_entity])
+        frontier = next_frontier
+
+    return result
+
+
+def _format_entities_with_relations(
+    state: GraphState,
+    entities: list[Entity],
+    entity_ids: set[str],
+    max_tokens: int,
+    verbose: bool = False,
+) -> str:
+    """Format entities with their relations."""
+    if not entities:
+        return "No matching entities found."
+
+    lines: list[str] = []
+
+    for entity in entities:
+        lines.append(f"### {entity.name} ({entity.type})")
+
+        # Observations
+        obs_limit = 5 if verbose else 3
+        for obs in entity.observations[:obs_limit]:
+            text = obs.text if verbose else obs.text[:100]
+            lines.append(f"  - {text}")
+        if len(entity.observations) > obs_limit:
+            lines.append(f"  - ... and {len(entity.observations) - obs_limit} more observations")
+
+        # Relations (only within the entity set)
+        for r in state.relations:
+            if r.from_entity == entity.id and r.to_entity in entity_ids:
+                target = state.entities.get(r.to_entity)
+                if target:
+                    lines.append(f"  → {r.type} → **{target.name}**")
+            elif r.to_entity == entity.id and r.from_entity in entity_ids:
+                source = state.entities.get(r.from_entity)
+                if source:
+                    lines.append(f"  ← {r.type} ← **{source.name}**")
+
+        lines.append("")
+
+    content = "\n".join(lines)
+
+    # Truncate if over budget
+    while estimate_tokens(content) > max_tokens and len(lines) > 10:
+        # Remove from the end, keeping structure
+        lines = lines[:-5]
+        content = "\n".join(lines) + "\n\n... (truncated)"
+
+    return content

@@ -220,6 +220,35 @@ async def list_tools() -> list[Tool]:
                 "required": ["query"],
             },
         ),
+        Tool(
+            name="memory_context",
+            description="Get memory context at varying depth levels for efficient retrieval",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "depth": {
+                        "type": "string",
+                        "enum": ["shallow", "medium", "deep"],
+                        "default": "shallow",
+                        "description": "shallow=summary (~500 tokens), medium=search+neighbors (~2000), deep=multi-hop (~5000)",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for medium depth (uses semantic search)",
+                    },
+                    "focus": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Entity names to focus on",
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Override default token budget",
+                    },
+                },
+                "required": ["depth"],
+            },
+        ),
     ]
 
 
@@ -272,6 +301,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 type_filter=arguments.get("type"),
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "memory_context":
+            result = engine.memory_context(
+                depth=arguments["depth"],
+                query=arguments.get("query"),
+                focus=arguments.get("focus"),
+                max_tokens=arguments.get("max_tokens"),
+            )
+            # Return the formatted content directly (it's markdown)
+            return [TextContent(type="text", text=result["content"])]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
