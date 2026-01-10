@@ -48,7 +48,7 @@ class MemoryVCS:
 state.json
 vectors.db
 *.lock
-graphmem.log
+mnemograph.log
 
 # Python
 __pycache__/

@@ -17,7 +17,7 @@ from .engine import MemoryEngine
 # --- Logging setup ---
 memory_dir = Path(os.environ.get("MEMORY_PATH", ".claude/memory"))
 memory_dir.mkdir(parents=True, exist_ok=True)
-log_file = memory_dir / "graphmem.log"
+log_file = memory_dir / "mnemograph.log"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,13 +27,13 @@ logging.basicConfig(
         logging.StreamHandler(sys.stderr),
     ],
 )
-logger = logging.getLogger("graphmem")
+logger = logging.getLogger("mnemograph")
 
 # --- Initialize engine ---
 session_id = os.environ.get("SESSION_ID", "default")
 engine = MemoryEngine(memory_dir, session_id)
 
-server = Server("graphmem")
+server = Server("mnemograph")
 
 
 @server.list_tools()
@@ -341,7 +341,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 def main():
     """Entry point for the MCP server."""
-    logger.info(f"GraphMem MCP Server starting (memory_dir={memory_dir}, session={session_id})")
+    logger.info(f"Mnemograph MCP Server starting (memory_dir={memory_dir}, session={session_id})")
     logger.info(f"Loaded {len(engine.state.entities)} entities, {len(engine.state.relations)} relations")
     try:
         asyncio.run(_run_server())

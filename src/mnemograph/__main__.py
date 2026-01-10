@@ -1,4 +1,4 @@
-"""Entry point for running as module: python -m memory_engine"""
+"""Entry point for running as module: python -m mnemograph"""
 
 from .server import main
 

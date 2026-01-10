@@ -4,10 +4,10 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from memory_engine.cli import cmd_log, cmd_revert, cmd_status, cmd_sessions, parse_since, main
-from memory_engine.engine import MemoryEngine
-from memory_engine.events import EventStore
-from memory_engine.state import materialize
+from mnemograph.cli import cmd_log, cmd_revert, cmd_status, cmd_sessions, parse_since, main
+from mnemograph.engine import MemoryEngine
+from mnemograph.events import EventStore
+from mnemograph.state import materialize
 
 
 class Args:

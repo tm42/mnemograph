@@ -15,7 +15,7 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from memory_engine.engine import MemoryEngine
+from mnemograph.engine import MemoryEngine
 
 
 def seed_basic_knowledge(engine: MemoryEngine) -> None:
@@ -201,7 +201,7 @@ def main():
     seed_sample_session(engine)
 
     print(f"\nFinal state: {len(engine.state.entities)} entities, {len(engine.state.relations)} relations")
-    print(f"Log file: {memory_path / 'graphmem.log'}")
+    print(f"Log file: {memory_path / 'mnemograph.log'}")
 
 
 if __name__ == "__main__":

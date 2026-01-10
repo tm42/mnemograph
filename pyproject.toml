@@ -1,5 +1,5 @@
 [project]
-name = "graphmem"
+name = "mnemograph"
 version = "0.1.0"
 description = "Event-sourced knowledge graph memory system for Claude Code"
 readme = "README.md"
@@ -16,9 +16,13 @@ dependencies = [
 ]
 
 [project.scripts]
-graphmem = "memory_engine.server:main"
-graphmem-cli = "memory_engine.cli:main"
-claude-mem = "memory_engine.vcs_cli:cli"
+mnemograph = "mnemograph.server:main"
+mnemograph-cli = "mnemograph.cli:main"
+claude-mem = "mnemograph.vcs_cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/tm42/mnemograph"
+Repository = "https://github.com/tm42/mnemograph"
 
 [dependency-groups]
 dev = [
@@ -40,4 +44,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/memory_engine"]
+packages = ["src/mnemograph"]

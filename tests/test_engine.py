@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from memory_engine.engine import MemoryEngine
+from mnemograph.engine import MemoryEngine
 
 
 def test_create_and_search():

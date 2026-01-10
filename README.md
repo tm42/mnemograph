@@ -1,10 +1,12 @@
-# GraphMem
+# Mnemograph
 
-A persistent, event-sourced knowledge graph for Claude Code. Unlike simple key-value memory, GraphMem captures **entities**, **relations**, and **observations** — enabling semantic search, tiered context retrieval, and git-based version control of your AI's memory.
+<!-- mcp-name: io.github.tm42/mnemograph -->
 
-## Why GraphMem?
+A persistent, event-sourced knowledge graph for Claude Code. Unlike simple key-value memory, Mnemograph captures **entities**, **relations**, and **observations** — enabling semantic search, tiered context retrieval, and git-based version control of your AI's memory.
 
-Claude Code sessions are ephemeral. GraphMem gives your AI partner persistent memory that:
+## Why Mnemograph?
+
+Claude Code sessions are ephemeral. Mnemograph gives your AI partner persistent memory that:
 
 - **Survives across sessions** — decisions, patterns, learnings persist
 - **Supports semantic search** — find relevant context by meaning, not just keywords
@@ -15,9 +17,12 @@ Claude Code sessions are ephemeral. GraphMem gives your AI partner persistent me
 ## Installation
 
 ```bash
-# Clone and install
-git clone https://github.com/YOUR_USERNAME/graphmem.git
-cd graphmem
+# Install from PyPI
+pip install mnemograph
+
+# Or install from source
+git clone https://github.com/tm42/mnemograph.git
+cd mnemograph
 uv sync  # or: pip install -e .
 
 # Initialize memory (creates ~/.claude/memory/)
@@ -31,9 +36,9 @@ Add to your MCP settings (`~/.claude.json` or project `.mcp.json`):
 ```json
 {
   "mcpServers": {
-    "graphmem": {
+    "mnemograph": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/graphmem", "graphmem"],
+      "args": ["run", "--directory", "/path/to/mnemograph", "mnemograph"],
       "env": {
         "MEMORY_PATH": "/Users/YOU/.claude/memory"
       }
@@ -46,7 +51,7 @@ Add to your MCP settings (`~/.claude.json` or project `.mcp.json`):
 
 ### MCP Tools (used by Claude)
 
-GraphMem exposes these tools to Claude Code:
+Mnemograph exposes these tools to Claude Code:
 
 | Tool | Description |
 |------|-------------|
@@ -64,15 +69,15 @@ GraphMem exposes these tools to Claude Code:
 
 ### CLI Tools
 
-**`graphmem-cli`** — Event-level operations:
+**`mnemograph-cli`** — Event-level operations:
 
 ```bash
-graphmem-cli status              # Show entity/relation counts, recent events
-graphmem-cli log                 # View event history
-graphmem-cli log --session X     # Filter by session
-graphmem-cli revert --event ID   # Undo specific events
-graphmem-cli revert --session X  # Undo entire session
-graphmem-cli export              # Export graph as JSON
+mnemograph-cli status              # Show entity/relation counts, recent events
+mnemograph-cli log                 # View event history
+mnemograph-cli log --session X     # Filter by session
+mnemograph-cli revert --event ID   # Undo specific events
+mnemograph-cli revert --session X  # Undo entire session
+mnemograph-cli export              # Export graph as JSON
 ```
 
 **`claude-mem`** — Git-based version control:
@@ -104,7 +109,7 @@ claude-mem log --oneline         # Compact commit log
 - Audit trail of what Claude learned and when
 
 **Two-layer versioning:**
-- `graphmem-cli revert` — fine-grained, undo specific events via compensating events
+- `mnemograph-cli revert` — fine-grained, undo specific events via compensating events
 - `claude-mem commit/revert` — coarse-grained, git-level checkpoints
 
 ## Entity Types
@@ -113,7 +118,7 @@ claude-mem log --oneline         # Compact commit log
 |------|---------|---------|
 | `concept` | Ideas, patterns, approaches | "Repository pattern", "Event sourcing" |
 | `decision` | Choices with rationale | "Chose SQLite over Postgres for simplicity" |
-| `project` | Codebases, systems | "auth-service", "graphmem" |
+| `project` | Codebases, systems | "auth-service", "mnemograph" |
 | `pattern` | Recurring code patterns | "Error handling with Result type" |
 | `question` | Open unknowns | "Should we add real-time sync?" |
 | `learning` | Discoveries | "pytest fixtures simplify test setup" |
@@ -125,12 +130,12 @@ claude-mem log --oneline         # Compact commit log
 uv sync                    # Install dependencies
 uv run pytest              # Run tests (56 tests)
 uv run ruff check .        # Lint
-uv run graphmem            # Run MCP server directly
+uv run mnemograph          # Run MCP server directly
 ```
 
 ## Based On
 
-GraphMem builds on ideas from:
+Mnemograph builds on ideas from:
 - [MCP server-memory](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) — Anthropic's official memory server (baseline)
 - [Mem0](https://github.com/mem0ai/mem0) — extraction/consolidation patterns
 - [Graphiti](https://github.com/getzep/graphiti) — bi-temporal modeling inspiration

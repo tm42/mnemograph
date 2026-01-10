@@ -152,7 +152,7 @@ Simple JSON-RPC over subprocess stdin/stdout:
 
 ```typescript
 // TypeScript side
-const pythonProcess = spawn('python', ['-m', 'memory_engine']);
+const pythonProcess = spawn('python', ['-m', 'mnemograph']);
 
 async function callEngine(method: string, params: any): Promise<any> {
   const request = { jsonrpc: '2.0', id: nextId++, method, params };
@@ -448,7 +448,7 @@ npx -y @modelcontextprotocol/server-memory
 1. **Define the data models (models.py):**
 
 ```python
-# src/memory_engine/models.py
+# src/mnemograph/models.py
 from pydantic import BaseModel, Field
 from typing import Literal
 from datetime import datetime
@@ -495,7 +495,7 @@ class MemoryEvent(BaseModel):
 2. **Create the event store module (events.py):**
 
 ```python
-# src/memory_engine/events.py
+# src/mnemograph/events.py
 from pathlib import Path
 import json
 from .models import MemoryEvent
@@ -537,7 +537,7 @@ class EventStore:
 3. **Create the state materializer (state.py):**
 
 ```python
-# src/memory_engine/state.py
+# src/mnemograph/state.py
 from dataclasses import dataclass, field
 from .models import Entity, Relation, MemoryEvent
 
@@ -603,7 +603,7 @@ def materialize(events: list[MemoryEvent]) -> GraphState:
 4. **Create the main engine (engine.py):**
 
 ```python
-# src/memory_engine/engine.py
+# src/mnemograph/engine.py
 from pathlib import Path
 from .events import EventStore
 from .state import GraphState, materialize
@@ -706,7 +706,7 @@ class MemoryEngine:
 5. **Wire into MCP server (server.py):**
 
 ```python
-# src/memory_engine/server.py
+# src/mnemograph/server.py
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -908,7 +908,7 @@ elif name == "open_nodes":
 1. **Create vectors module (vectors.py):**
 
 ```python
-# src/memory_engine/vectors.py
+# src/mnemograph/vectors.py
 import sqlite3
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
@@ -1067,7 +1067,7 @@ Tool(
 **Goal**: Implement shallow → medium → deep context levels.
 
 ```python
-# src/memory_engine/retrieval.py
+# src/mnemograph/retrieval.py
 from dataclasses import dataclass
 from .models import Entity, Relation
 from .state import GraphState
@@ -1266,7 +1266,7 @@ Tool(
 
 **Pseudocode:**
 ```python
-# src/memory_engine/synthesis.py (future)
+# src/mnemograph/synthesis.py (future)
 async def synthesize(query: str, entities: list[Entity], style: str = "summary") -> str:
     prompt = f"""Synthesize this knowledge subgraph to answer: {query}
     
@@ -1317,9 +1317,9 @@ claude-memory compact --before="7 days ago"
 ```
 claude-memory/
 ├── src/
-│   └── memory_engine/         # Python package
+│   └── mnemograph/         # Python package
 │       ├── __init__.py
-│       ├── __main__.py        # Entry point (python -m memory_engine)
+│       ├── __main__.py        # Entry point (python -m mnemograph)
 │       ├── server.py          # MCP server (using mcp package)
 │       ├── events.py          # Event store (append-only log)
 │       ├── state.py           # State materialization
@@ -1475,7 +1475,7 @@ If I'm going in circles, ask me to:
   uv add mcp pydantic python-ulid
   ```
 - [ ] Get official memory server running, play with it (Phase 0)
-- [ ] Create `src/memory_engine/` package structure
+- [ ] Create `src/mnemograph/` package structure
 - [ ] Implement `models.py` (Entity, Relation, Event, Observation)
 - [ ] Implement `events.py` (EventStore class)
 - [ ] Implement `state.py` (materialize function)

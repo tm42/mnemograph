@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.tm42/mnemograph",
+  "description": "Event-sourced knowledge graph memory for Claude Code with semantic search, tiered retrieval, and git-based version control",
+  "repository": {
+    "url": "https://github.com/tm42/mnemograph",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registry_type": "pypi",
+      "identifier": "mnemograph",
+      "version": "0.1.0",
+      "runtime": "python",
+      "runtime_arguments": ["-m", "mnemograph"],
+      "transport": {
+        "type": "stdio"
+      },
+      "environment_variables": [
+        {
+          "description": "Path to memory storage directory",
+          "name": "MEMORY_PATH",
+          "is_required": false,
+          "default": "~/.claude/memory"
+        }
+      ]
+    }
+  ]
+}

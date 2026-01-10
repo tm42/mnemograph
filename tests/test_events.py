@@ -3,8 +3,8 @@
 import tempfile
 from pathlib import Path
 
-from memory_engine.events import EventStore
-from memory_engine.models import MemoryEvent
+from mnemograph.events import EventStore
+from mnemograph.models import MemoryEvent
 
 
 def test_append_and_read():

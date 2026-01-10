@@ -62,7 +62,7 @@ Enable humans to:
 ```
 claude-memory/
 ├── src/
-│   └── memory_engine/
+│   └── mnemograph/
 │       ├── __init__.py
 │       ├── models.py          # Entity, Relation, Event, Observation
 │       ├── events.py          # EventStore class
@@ -304,7 +304,7 @@ $ claude-mem edit --interactive            # TUI for browsing/editing
 
 ## Implementation Guide
 
-### 1. Git Operations Wrapper (`src/memory_engine/vcs.py`)
+### 1. Git Operations Wrapper (`src/mnemograph/vcs.py`)
 
 ```python
 """Git operations wrapper for memory versioning."""
@@ -627,7 +627,7 @@ from rich.syntax import Syntax
 from rich.panel import Panel
 import json
 
-from memory_engine.vcs import MemoryVCS
+from mnemograph.vcs import MemoryVCS
 
 console = Console()
 
@@ -1103,9 +1103,9 @@ from pathlib import Path
 import tempfile
 import json
 
-from memory_engine.vcs import MemoryVCS
-from memory_engine.events import EventStore
-from memory_engine.models import MemoryEvent
+from mnemograph.vcs import MemoryVCS
+from mnemograph.events import EventStore
+from mnemograph.models import MemoryEvent
 
 
 @pytest.fixture
@@ -1312,7 +1312,7 @@ def format_diff_with_names(diff: dict, state_before: dict, state_after: dict) ->
 ## Checklist
 
 - [ ] Add dependencies to pyproject.toml (click, rich, gitpython, jinja2)
-- [ ] Create `src/memory_engine/vcs.py` with MemoryVCS class
+- [ ] Create `src/mnemograph/vcs.py` with MemoryVCS class
 - [ ] Create `cli/main.py` with all commands
 - [ ] Add entry point to pyproject.toml (`claude-mem = "cli.main:cli"`)
 - [ ] Test `claude-mem init` in a fresh directory

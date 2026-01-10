@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from memory_engine.engine import MemoryEngine
+from mnemograph.engine import MemoryEngine
 
 
 @pytest.fixture

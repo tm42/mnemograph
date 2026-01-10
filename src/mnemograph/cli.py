@@ -282,8 +282,8 @@ def cmd_sessions(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        prog="graphmem-cli",
-        description="Manage GraphMem memory system",
+        prog="mnemograph-cli",
+        description="Manage Mnemograph memory system",
     )
     parser.add_argument(
         "--memory-path",

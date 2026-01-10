@@ -2,8 +2,8 @@
 
 from datetime import datetime, timezone
 
-from memory_engine.models import MemoryEvent
-from memory_engine.state import materialize
+from mnemograph.models import MemoryEvent
+from mnemograph.state import materialize
 
 
 def test_materialize_empty():

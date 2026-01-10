@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from memory_engine.vcs import MemoryVCS
+from mnemograph.vcs import MemoryVCS
 
 
 @pytest.fixture
