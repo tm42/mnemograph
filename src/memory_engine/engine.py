@@ -1,5 +1,6 @@
 """Memory engine - orchestrates event store, state, and operations."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .events import EventStore
@@ -171,6 +172,9 @@ class MemoryEngine:
                 matching_entities.append(entity)
                 matching_entity_ids.add(entity.id)
 
+        # Track access for matched entities
+        self._track_access(list(matching_entity_ids))
+
         # Include relations between matching entities
         matching_relations = [
             r for r in self.state.relations
@@ -183,7 +187,7 @@ class MemoryEngine:
         }
 
     def open_nodes(self, names: list[str]) -> dict:
-        """Get specific entities by name and their relations."""
+        """Get specific entities by name, their relations, and neighbors."""
         entities = []
         entity_ids = set()
 
@@ -193,15 +197,32 @@ class MemoryEngine:
                 entities.append(self.state.entities[entity_id])
                 entity_ids.add(entity_id)
 
+        # Track access
+        self._track_access(list(entity_ids))
+
         # Include relations involving these entities
         relations = [
             r for r in self.state.relations
             if r.from_entity in entity_ids or r.to_entity in entity_ids
         ]
 
+        # Find neighbor IDs (entities connected via relations)
+        neighbor_ids = set()
+        for r in relations:
+            if r.from_entity not in entity_ids:
+                neighbor_ids.add(r.from_entity)
+            if r.to_entity not in entity_ids:
+                neighbor_ids.add(r.to_entity)
+
+        neighbors = [
+            self.state.entities[nid] for nid in neighbor_ids
+            if nid in self.state.entities
+        ]
+
         return {
             "entities": [e.model_dump(mode="json") for e in entities],
             "relations": [r.model_dump(mode="json") for r in relations],
+            "neighbors": [n.model_dump(mode="json") for n in neighbors],
         }
 
     # --- Helpers ---
@@ -214,3 +235,59 @@ class MemoryEngine:
             if entity.name == name_or_id:
                 return entity.id
         return None
+
+    def _track_access(self, entity_ids: list[str]) -> None:
+        """Update access counts for retrieved entities (in-memory only, not persisted)."""
+        now = datetime.now(timezone.utc)
+        for entity_id in entity_ids:
+            if entity_id in self.state.entities:
+                entity = self.state.entities[entity_id]
+                entity.access_count += 1
+                entity.last_accessed = now
+
+    # --- Phase 2: Richer queries ---
+
+    def get_recent_entities(self, limit: int = 10) -> list[Entity]:
+        """Get most recently updated entities."""
+        return sorted(
+            self.state.entities.values(),
+            key=lambda e: e.updated_at,
+            reverse=True,
+        )[:limit]
+
+    def get_hot_entities(self, limit: int = 10) -> list[Entity]:
+        """Get most frequently accessed entities."""
+        return sorted(
+            self.state.entities.values(),
+            key=lambda e: e.access_count,
+            reverse=True,
+        )[:limit]
+
+    def get_entities_by_type(self, entity_type: str) -> list[Entity]:
+        """Filter entities by type."""
+        return [e for e in self.state.entities.values() if e.type == entity_type]
+
+    def get_entity_neighbors(self, entity_id: str, include_entity: bool = True) -> dict:
+        """Get entity and its directly connected neighbors via relations."""
+        entity = self.state.entities.get(entity_id)
+        if not entity:
+            return {"entity": None, "neighbors": [], "outgoing": [], "incoming": []}
+
+        outgoing = [r for r in self.state.relations if r.from_entity == entity_id]
+        incoming = [r for r in self.state.relations if r.to_entity == entity_id]
+
+        neighbor_ids = set(
+            [r.to_entity for r in outgoing] + [r.from_entity for r in incoming]
+        )
+        neighbors = [self.state.entities[nid] for nid in neighbor_ids if nid in self.state.entities]
+
+        # Track access
+        accessed = [entity_id] + list(neighbor_ids)
+        self._track_access(accessed)
+
+        return {
+            "entity": entity.model_dump(mode="json") if include_entity else None,
+            "neighbors": [n.model_dump(mode="json") for n in neighbors],
+            "outgoing": [r.model_dump(mode="json") for r in outgoing],
+            "incoming": [r.model_dump(mode="json") for r in incoming],
+        }
