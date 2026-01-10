@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 graphmem = "memory_engine.server:main"
+graphmem-cli = "memory_engine.cli:main"
 
 [dependency-groups]
 dev = [
