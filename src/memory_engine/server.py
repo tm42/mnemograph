@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import logging
 import os
 import sys
+import traceback
 from pathlib import Path
 
 from mcp.server import Server
@@ -12,8 +14,22 @@ from mcp.types import TextContent, Tool
 
 from .engine import MemoryEngine
 
-# Initialize engine from environment
+# --- Logging setup ---
 memory_dir = Path(os.environ.get("MEMORY_PATH", ".claude/memory"))
+memory_dir.mkdir(parents=True, exist_ok=True)
+log_file = memory_dir / "graphmem.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler(sys.stderr),
+    ],
+)
+logger = logging.getLogger("graphmem")
+
+# --- Initialize engine ---
 session_id = os.environ.get("SESSION_ID", "default")
 engine = MemoryEngine(memory_dir, session_id)
 
@@ -255,6 +271,8 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
+    logger.info(f"Tool call: {name}")
+    logger.debug(f"Arguments: {arguments}")
     try:
         if name == "create_entities":
             created = engine.create_entities(arguments["entities"])
@@ -316,13 +334,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
     except Exception as e:
+        logger.error(f"Tool {name} failed: {e}")
+        logger.error(traceback.format_exc())
         return [TextContent(type="text", text=f"Error: {e}")]
 
 
 def main():
     """Entry point for the MCP server."""
-    print("GraphMem MCP Server starting...", file=sys.stderr)
-    asyncio.run(_run_server())
+    logger.info(f"GraphMem MCP Server starting (memory_dir={memory_dir}, session={session_id})")
+    logger.info(f"Loaded {len(engine.state.entities)} entities, {len(engine.state.relations)} relations")
+    try:
+        asyncio.run(_run_server())
+    except Exception as e:
+        logger.error(f"Server crashed: {e}")
+        logger.error(traceback.format_exc())
+        raise
 
 
 async def _run_server():
