@@ -16,6 +16,7 @@ class MemoryEngine:
         self.session_id = session_id
         self.event_store = EventStore(memory_dir / "events.jsonl")
         self.state: GraphState = self._load_state()
+        self._vector_index = None  # Lazy-loaded
 
     def _load_state(self) -> GraphState:
         """Load state from events."""
@@ -291,3 +292,54 @@ class MemoryEngine:
             "outgoing": [r.model_dump(mode="json") for r in outgoing],
             "incoming": [r.model_dump(mode="json") for r in incoming],
         }
+
+    # --- Phase 3: Vector search ---
+
+    @property
+    def vector_index(self):
+        """Lazy-load vector index."""
+        if self._vector_index is None:
+            from .vectors import VectorIndex
+            self._vector_index = VectorIndex(self.memory_dir / "vectors.db")
+            # Index all existing entities
+            self._vector_index.reindex_all(list(self.state.entities.values()))
+        return self._vector_index
+
+    def search_semantic(
+        self,
+        query: str,
+        limit: int = 10,
+        type_filter: str | None = None
+    ) -> dict:
+        """Semantic search using embeddings."""
+        results = self.vector_index.search(query, limit, type_filter)
+
+        entities = []
+        entity_ids = []
+        for entity_id, score in results:
+            if entity_id in self.state.entities:
+                entity = self.state.entities[entity_id]
+                entity_dict = entity.model_dump(mode="json")
+                entity_dict["_score"] = score  # Attach similarity score
+                entities.append(entity_dict)
+                entity_ids.append(entity_id)
+
+        # Track access
+        self._track_access(entity_ids)
+
+        # Include relations between matched entities
+        entity_id_set = set(entity_ids)
+        relations = [
+            r.model_dump(mode="json") for r in self.state.relations
+            if r.from_entity in entity_id_set or r.to_entity in entity_id_set
+        ]
+
+        return {
+            "entities": entities,
+            "relations": relations,
+        }
+
+    def ensure_indexed(self, entity_id: str) -> None:
+        """Ensure a specific entity is indexed (call after mutations)."""
+        if self._vector_index is not None and entity_id in self.state.entities:
+            self._vector_index.index_entity(self.state.entities[entity_id])

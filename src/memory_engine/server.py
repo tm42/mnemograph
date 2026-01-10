@@ -200,6 +200,26 @@ async def list_tools() -> list[Tool]:
                 "required": ["names"],
             },
         ),
+        Tool(
+            name="search_semantic",
+            description="Search entities using semantic similarity (meaning-based, not just keyword matching)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural language search query"},
+                    "limit": {"type": "integer", "default": 10, "description": "Max results"},
+                    "type": {
+                        "type": "string",
+                        "description": "Filter by entity type",
+                        "enum": [
+                            "concept", "decision", "project",
+                            "pattern", "question", "learning", "entity"
+                        ],
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
     ]
 
 
@@ -243,6 +263,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "open_nodes":
             result = engine.open_nodes(arguments["names"])
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "search_semantic":
+            result = engine.search_semantic(
+                query=arguments["query"],
+                limit=arguments.get("limit", 10),
+                type_filter=arguments.get("type"),
+            )
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:
