@@ -1,20 +1,141 @@
 # GraphMem
 
-Event-sourced knowledge graph memory system for Claude Code.
+A persistent, event-sourced knowledge graph for Claude Code. Unlike simple key-value memory, GraphMem captures **entities**, **relations**, and **observations** — enabling semantic search, tiered context retrieval, and git-based version control of your AI's memory.
 
-## Development
+## Why GraphMem?
+
+Claude Code sessions are ephemeral. GraphMem gives your AI partner persistent memory that:
+
+- **Survives across sessions** — decisions, patterns, learnings persist
+- **Supports semantic search** — find relevant context by meaning, not just keywords
+- **Provides tiered retrieval** — shallow summaries to deep subgraphs based on need
+- **Versions like code** — branch, commit, diff, revert your knowledge graph
+- **Enables collaboration** — share memory repos across users or projects
+
+## Installation
 
 ```bash
-# Install dependencies
-uv sync
+# Clone and install
+git clone https://github.com/YOUR_USERNAME/graphmem.git
+cd graphmem
+uv sync  # or: pip install -e .
 
-# Run tests
-uv run pytest
+# Initialize memory (creates ~/.claude/memory/)
+claude-mem init
+```
 
-# Run the MCP server
-uv run graphmem
+### Configure Claude Code
+
+Add to your MCP settings (`~/.claude.json` or project `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "graphmem": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/graphmem", "graphmem"],
+      "env": {
+        "MEMORY_PATH": "/Users/YOU/.claude/memory"
+      }
+    }
+  }
+}
+```
+
+## Usage
+
+### MCP Tools (used by Claude)
+
+GraphMem exposes these tools to Claude Code:
+
+| Tool | Description |
+|------|-------------|
+| `create_entities` | Create nodes: concepts, decisions, patterns, projects, questions, learnings |
+| `create_relations` | Link entities with typed edges (implements, uses, decided_for, etc.) |
+| `add_observations` | Add facts/notes to existing entities |
+| `delete_entities` | Remove entities (cascades to relations) |
+| `delete_relations` | Remove specific relations |
+| `delete_observations` | Remove specific observations |
+| `read_graph` | Get the full knowledge graph |
+| `search_nodes` | Text search across names and observations |
+| `open_nodes` | Get specific entities with their relations |
+| `search_semantic` | Vector similarity search (meaning-based) |
+| `memory_context` | Tiered retrieval: shallow (summary), medium (search+neighbors), deep (subgraph) |
+
+### CLI Tools
+
+**`graphmem-cli`** — Event-level operations:
+
+```bash
+graphmem-cli status              # Show entity/relation counts, recent events
+graphmem-cli log                 # View event history
+graphmem-cli log --session X     # Filter by session
+graphmem-cli revert --event ID   # Undo specific events
+graphmem-cli revert --session X  # Undo entire session
+graphmem-cli export              # Export graph as JSON
+```
+
+**`claude-mem`** — Git-based version control:
+
+```bash
+claude-mem init                  # Initialize memory as git repo
+claude-mem status                # Show uncommitted changes
+claude-mem commit -m "message"   # Commit current state
+claude-mem commit -m "msg" -a    # Commit with auto-summary
+claude-mem log                   # View commit history
+claude-mem log --oneline         # Compact commit log
 ```
 
 ## Architecture
 
-See [CLAUDE.md](./CLAUDE.md) for full design documentation.
+```
+~/.claude/memory/
+├── events.jsonl    # Append-only event log (source of truth)
+├── state.json      # Cached materialized state (derived)
+├── vectors.db      # Semantic search index (derived)
+└── .git/           # Version history
+```
+
+**Event sourcing** means all changes are recorded as immutable events. The current state is computed by replaying events. This enables:
+
+- Full history of all changes
+- Revert any operation
+- Branch/merge knowledge graphs
+- Audit trail of what Claude learned and when
+
+**Two-layer versioning:**
+- `graphmem-cli revert` — fine-grained, undo specific events via compensating events
+- `claude-mem commit/revert` — coarse-grained, git-level checkpoints
+
+## Entity Types
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| `concept` | Ideas, patterns, approaches | "Repository pattern", "Event sourcing" |
+| `decision` | Choices with rationale | "Chose SQLite over Postgres for simplicity" |
+| `project` | Codebases, systems | "auth-service", "graphmem" |
+| `pattern` | Recurring code patterns | "Error handling with Result type" |
+| `question` | Open unknowns | "Should we add real-time sync?" |
+| `learning` | Discoveries | "pytest fixtures simplify test setup" |
+| `entity` | Generic (people, files, etc.) | "Alice", "config.yaml" |
+
+## Development
+
+```bash
+uv sync                    # Install dependencies
+uv run pytest              # Run tests (56 tests)
+uv run ruff check .        # Lint
+uv run graphmem            # Run MCP server directly
+```
+
+## Based On
+
+GraphMem builds on ideas from:
+- [MCP server-memory](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) — Anthropic's official memory server (baseline)
+- [Mem0](https://github.com/mem0ai/mem0) — extraction/consolidation patterns
+- [Graphiti](https://github.com/getzep/graphiti) — bi-temporal modeling inspiration
+- Event sourcing principles — append-only logs, state materialization
+
+## License
+
+MIT
