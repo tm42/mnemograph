@@ -10,11 +10,15 @@ dependencies = [
     "python-ulid>=3.1.0",
     "sentence-transformers>=5.2.0",
     "sqlite-vec>=0.1.6",
+    "click>=8.0",
+    "rich>=13.0",
+    "gitpython>=3.1",
 ]
 
 [project.scripts]
 graphmem = "memory_engine.server:main"
 graphmem-cli = "memory_engine.cli:main"
+claude-mem = "memory_engine.vcs_cli:cli"
 
 [dependency-groups]
 dev = [
