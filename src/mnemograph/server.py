@@ -505,7 +505,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="session_start",
-            description="Signal session start and get initial context",
+            description="Signal session start and get initial context. Returns quick_start guide with tool usage. IMPORTANT: If memory is empty, ask user whether to use project-local or global memory scope.",
             inputSchema={
                 "type": "object",
                 "properties": {

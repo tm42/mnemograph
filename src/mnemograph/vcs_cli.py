@@ -1311,6 +1311,9 @@ def graph(ctx, export_path, with_context, open_only, watch):
         # Start HTTP server
         viz_dir = memory_dir / "viz"
 
+        # Shutdown flag for clean server stop
+        shutdown_requested = threading.Event()
+
         class GraphAPIHandler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, directory=str(viz_dir), **kwargs)
@@ -1344,6 +1347,19 @@ def graph(ctx, export_path, with_context, open_only, watch):
                 else:
                     super().do_GET()
 
+            def do_POST(self):
+                if self.path == "/api/shutdown":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(b'{"status": "shutting_down"}')
+                    # Signal shutdown
+                    shutdown_requested.set()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
         server = http.server.HTTPServer(('localhost', port), GraphAPIHandler)
 
         if watch:
@@ -1351,13 +1367,26 @@ def graph(ctx, export_path, with_context, open_only, watch):
             url = f"http://localhost:{port}/graph-viewer.html"
             webbrowser.open(url)
             console.print(f"[green]✓[/green] Opened viewer at {url}")
-            console.print("[cyan]   Watching for changes. Press Ctrl+C to stop.[/cyan]")
+            console.print("[cyan]   Watching for changes. Press Ctrl+C or click 'Stop Server' to stop.[/cyan]")
             console.print("[dim]   Click 'Refresh' in viewer to reload data.[/dim]")
 
+            # Run server in a thread so we can check shutdown flag
+            def serve_loop():
+                while not shutdown_requested.is_set():
+                    server.handle_request()
+
+            server_thread = threading.Thread(target=serve_loop, daemon=True)
+            server_thread.start()
+
             try:
-                server.serve_forever()
+                # Wait for either keyboard interrupt or shutdown request
+                while not shutdown_requested.is_set():
+                    shutdown_requested.wait(timeout=0.5)
+                console.print("\n[yellow]Server stopped via browser.[/yellow]")
             except KeyboardInterrupt:
                 console.print("\n[yellow]Server stopped.[/yellow]")
+            finally:
+                shutdown_requested.set()
                 server.shutdown()
         else:
             # Normal mode: serve a few requests then stop

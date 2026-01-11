@@ -16,6 +16,30 @@ AI coding sessions are ephemeral. Mnemograph gives your AI partner persistent me
 - **Versions like code** — branch, commit, diff, revert your knowledge graph
 - **Enables collaboration** — share memory repos across users or projects
 
+## Memory Scope: Local vs Global
+
+**Before using mnemograph, decide where to store memory:**
+
+| Scope | Path | Use When |
+|-------|------|----------|
+| **Project-local** | `./.claude/memory` | Knowledge specific to this repo (architecture, decisions, patterns) |
+| **Global** | `~/.claude/memory` | Cross-project knowledge (personal learnings, universal patterns, preferences) |
+| **Custom** | Any path via `MEMORY_PATH` | Shared team memory, org-wide knowledge bases |
+
+**Important:** Agents should ask the user which scope to use when first setting up mnemograph for a project. This affects where knowledge is stored and whether it's shared across projects.
+
+```bash
+# Project-local (default)
+MEMORY_PATH=".claude/memory"
+
+# Global (cross-project)
+MEMORY_PATH="$HOME/.claude/memory"
+
+# CLI: use --global flag
+mg --global status
+mg --global graph
+```
+
 ## Quick Start
 
 ### Option 1: Let Claude Code install it

@@ -234,6 +234,23 @@ def get_viewer_html() -> str:
             cursor: not-allowed;
         }
 
+        #stopBtn {
+            width: 100%;
+            margin-top: 8px;
+            padding: 10px;
+            background: #dc2626;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #stopBtn:hover {
+            background: #b91c1c;
+        }
+
         /* Info panel (hover details) */
         #info {
             position: absolute;
@@ -400,6 +417,7 @@ def get_viewer_html() -> str:
             </div>
 
             <button id="refreshBtn" style="display: none;">Refresh</button>
+            <button id="stopBtn" style="display: none;">Stop Server</button>
         </div>
 
         <div id="info">
@@ -829,10 +847,13 @@ def get_viewer_html() -> str:
                 render();
             });
 
-            // Refresh button (only shown in watch mode)
+            // Refresh and Stop buttons (only shown in watch mode)
             const refreshBtn = document.getElementById('refreshBtn');
+            const stopBtn = document.getElementById('stopBtn');
             if (window.API_ENABLED) {
                 refreshBtn.style.display = 'block';
+                stopBtn.style.display = 'block';
+
                 refreshBtn.addEventListener('click', async () => {
                     refreshBtn.disabled = true;
                     refreshBtn.textContent = 'Loading...';
@@ -853,6 +874,23 @@ def get_viewer_html() -> str:
                         setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 2000);
                     }
                     refreshBtn.disabled = false;
+                });
+
+                stopBtn.addEventListener('click', async () => {
+                    if (!confirm('Stop the visualization server?')) return;
+                    stopBtn.disabled = true;
+                    stopBtn.textContent = 'Stopping...';
+                    try {
+                        await fetch('/api/shutdown', { method: 'POST' });
+                        stopBtn.textContent = 'Server stopped';
+                        refreshBtn.disabled = true;
+                        // Show message that page can be closed
+                        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#888;font-family:sans-serif;"><div style="text-align:center"><h2>Server stopped</h2><p>You can close this tab.</p></div></div>';
+                    } catch (err) {
+                        console.error('Shutdown failed:', err);
+                        stopBtn.textContent = 'Error';
+                        setTimeout(() => { stopBtn.textContent = 'Stop Server'; stopBtn.disabled = false; }, 2000);
+                    }
                 });
             }
         }
