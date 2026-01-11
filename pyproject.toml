@@ -1,6 +1,6 @@
 [project]
 name = "mnemograph"
-version = "0.1.3"
+version = "0.2.0"
 description = "Event-sourced knowledge graph memory for AI coding agents (MCP server)"
 readme = "README.md"
 requires-python = ">=3.11"
