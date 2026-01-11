@@ -43,11 +43,19 @@ def get_memory_dir() -> Path:
     type=click.Path(path_type=Path),
     help="Path to memory directory",
 )
+@click.option(
+    "--global", "use_global",
+    is_flag=True,
+    help="Use global memory (~/.claude/memory) instead of project-local",
+)
 @click.pass_context
-def cli(ctx, memory_path):
+def cli(ctx, memory_path, use_global):
     """Claude Memory - Git-based knowledge graph version control."""
     ctx.ensure_object(dict)
-    ctx.obj["memory_dir"] = memory_path or get_memory_dir()
+    if use_global:
+        ctx.obj["memory_dir"] = Path.home() / ".claude" / "memory"
+    else:
+        ctx.obj["memory_dir"] = memory_path or get_memory_dir()
 
 
 @cli.command()
@@ -527,8 +535,9 @@ def connections(ctx, entity_name, limit, as_json):
 @click.option("--export", "export_path", type=click.Path(path_type=Path), help="Export only (don't open viewer)")
 @click.option("--with-context/--no-context", default=True, help="Include off-branch entities as ghost nodes")
 @click.option("--open", "open_only", type=click.Path(path_type=Path), help="Open an existing export file")
+@click.option("--watch", is_flag=True, help="Keep server running for live refresh")
 @click.pass_context
-def graph(ctx, export_path, with_context, open_only):
+def graph(ctx, export_path, with_context, open_only, watch):
     """Visualize the knowledge graph.
 
     Opens an interactive D3.js viewer in your browser.
@@ -542,7 +551,7 @@ def graph(ctx, export_path, with_context, open_only):
         mnemograph graph --open exports/graph.json  # Open existing export
     """
     import webbrowser
-    from .viz import export_graph_for_viz, ensure_viewer_exists
+    from .viz import export_graph_for_viz
     from .events import EventStore
     from .state import materialize
 
@@ -550,9 +559,17 @@ def graph(ctx, export_path, with_context, open_only):
 
     # Handle open-only mode
     if open_only:
-        viewer_path = ensure_viewer_exists(memory_dir)
-        export_abs = Path(open_only).resolve()
-        url = f"file://{viewer_path}#{export_abs}"
+        from .viz import create_standalone_viewer
+
+        export_file = Path(open_only)
+        if not export_file.exists():
+            console.print(f"[red]✗[/red] File not found: {open_only}")
+            return
+
+        data = json.loads(export_file.read_text())
+        viewer_path = memory_dir / "viz" / "graph-viewer.html"
+        create_standalone_viewer(data, viewer_path)
+        url = f"file://{viewer_path.resolve()}"
         webbrowser.open(url)
         console.print(f"[green]✓[/green] Opened viewer with {open_only}")
         return
@@ -582,11 +599,87 @@ def graph(ctx, export_path, with_context, open_only):
 
     # Open viewer unless export-only
     if not export_path:
-        viewer_path = ensure_viewer_exists(memory_dir)
-        output_abs = output_path.resolve()
-        url = f"file://{viewer_path}#{output_abs}"
-        webbrowser.open(url)
-        console.print(f"[green]✓[/green] Opened viewer in browser")
+        from .viz import create_standalone_viewer
+        import http.server
+        import threading
+        import socket
+
+        # Create standalone HTML with embedded data
+        data = json.loads(output_path.read_text())
+        viewer_path = memory_dir / "viz" / "graph-viewer.html"
+        create_standalone_viewer(data, viewer_path, api_enabled=watch)
+
+        # Find a free port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            port = s.getsockname()[1]
+
+        # Start HTTP server
+        viz_dir = memory_dir / "viz"
+
+        class GraphAPIHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(viz_dir), **kwargs)
+
+            def log_message(self, format, *args):
+                pass  # Suppress logging
+
+            def do_GET(self):
+                if self.path == "/api/graph":
+                    # Re-export fresh data
+                    event_store_fresh = EventStore(memory_dir / "events.jsonl")
+                    events_fresh = event_store_fresh.read_all()
+                    state_fresh = materialize(events_fresh)
+
+                    from .viz import export_graph_for_viz
+                    fresh_output = export_graph_for_viz(
+                        state=state_fresh,
+                        memory_dir=memory_dir,
+                        branch_entity_ids=None,
+                        branch_relation_ids=None,
+                        branch_name="main",
+                        include_context=with_context,
+                    )
+                    fresh_data = fresh_output.read_text()
+
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(fresh_data.encode())
+                else:
+                    super().do_GET()
+
+        server = http.server.HTTPServer(('localhost', port), GraphAPIHandler)
+
+        if watch:
+            # Watch mode: keep server running
+            url = f"http://localhost:{port}/graph-viewer.html"
+            webbrowser.open(url)
+            console.print(f"[green]✓[/green] Opened viewer at {url}")
+            console.print("[cyan]   Watching for changes. Press Ctrl+C to stop.[/cyan]")
+            console.print("[dim]   Click 'Refresh' in viewer to reload data.[/dim]")
+
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Server stopped.[/yellow]")
+                server.shutdown()
+        else:
+            # Normal mode: serve a few requests then stop
+            def serve_requests():
+                for _ in range(5):
+                    server.handle_request()
+
+            thread = threading.Thread(target=serve_requests, daemon=True)
+            thread.start()
+
+            url = f"http://localhost:{port}/graph-viewer.html"
+            webbrowser.open(url)
+            console.print(f"[green]✓[/green] Opened viewer at {url}")
+            console.print("[dim]   (server will stop after a few seconds)[/dim]")
+
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

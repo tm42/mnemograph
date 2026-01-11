@@ -175,12 +175,63 @@ def get_viewer_html() -> str:
             height: 16px;
         }
 
+        .control-section {
+            margin: 12px 0;
+            padding-top: 12px;
+            border-top: 1px solid #333;
+        }
+
+        .control-section label {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+        }
+
+        .control-section select {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #2a2a4a;
+            color: #eee;
+            font-size: 13px;
+        }
+
+        .control-section input[type="range"] {
+            width: 100%;
+            margin-top: 4px;
+        }
+
         .stats {
             margin-top: 12px;
             padding-top: 12px;
             border-top: 1px solid #444;
             font-size: 12px;
             color: #888;
+        }
+
+        #refreshBtn {
+            width: 100%;
+            margin-top: 12px;
+            padding: 10px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #refreshBtn:hover {
+            background: #2563eb;
+        }
+
+        #refreshBtn:disabled {
+            background: #6b7280;
+            cursor: not-allowed;
         }
 
         /* Info panel (hover details) */
@@ -318,11 +369,37 @@ def get_viewer_html() -> str:
                 <input type="checkbox" id="showLabels" checked>
                 Show labels
             </label>
+
+            <div class="control-section">
+                <label for="layout">Layout</label>
+                <select id="layout">
+                    <option value="force">Force-directed</option>
+                    <option value="radial">Radial</option>
+                    <option value="cluster">Clustered</option>
+                </select>
+            </div>
+
+            <div class="control-section">
+                <label for="colorMode">Color by</label>
+                <select id="colorMode">
+                    <option value="type">Entity type</option>
+                    <option value="component">Component</option>
+                    <option value="degree">Degree (centrality)</option>
+                </select>
+            </div>
+
+            <div class="control-section">
+                <label for="weightFilter">Min edge weight: <span id="weightValue">0.0</span></label>
+                <input type="range" id="weightFilter" min="0" max="1" step="0.1" value="0">
+            </div>
+
             <div class="stats">
                 <div id="branchName">Branch: main</div>
                 <div id="entityCount">Entities: 0</div>
                 <div id="relationCount">Relations: 0</div>
             </div>
+
+            <button id="refreshBtn" style="display: none;">Refresh</button>
         </div>
 
         <div id="info">
@@ -349,10 +426,76 @@ def get_viewer_html() -> str:
             default: '#6b7280'     // Gray
         };
 
+        // Component colors for clustering
+        const COMPONENT_COLORS = [
+            '#e11d48', '#db2777', '#c026d3', '#9333ea', '#7c3aed',
+            '#6366f1', '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6',
+            '#10b981', '#22c55e', '#84cc16', '#eab308', '#f59e0b'
+        ];
+
         // State
         let graphData = null;
         let simulation = null;
         let selectedNode = null;
+        let currentLayout = 'force';
+        let currentColorMode = 'type';
+        let minWeight = 0;
+
+        // Find connected components using Union-Find
+        function findComponents(nodes, links) {
+            const parent = new Map();
+            const rank = new Map();
+
+            function find(x) {
+                if (!parent.has(x)) {
+                    parent.set(x, x);
+                    rank.set(x, 0);
+                }
+                if (parent.get(x) !== x) {
+                    parent.set(x, find(parent.get(x)));
+                }
+                return parent.get(x);
+            }
+
+            function union(x, y) {
+                const px = find(x), py = find(y);
+                if (px === py) return;
+                if (rank.get(px) < rank.get(py)) {
+                    parent.set(px, py);
+                } else if (rank.get(px) > rank.get(py)) {
+                    parent.set(py, px);
+                } else {
+                    parent.set(py, px);
+                    rank.set(px, rank.get(px) + 1);
+                }
+            }
+
+            nodes.forEach(n => find(n.id));
+            links.forEach(l => union(l.source.id || l.source, l.target.id || l.target));
+
+            // Map each root to a component index
+            const roots = [...new Set(nodes.map(n => find(n.id)))];
+            const componentMap = new Map(roots.map((r, i) => [r, i]));
+
+            return new Map(nodes.map(n => [n.id, componentMap.get(find(n.id))]));
+        }
+
+        // Get color based on current mode
+        function getNodeColor(node, degrees, components) {
+            if (currentColorMode === 'type') {
+                return TYPE_COLORS[node.type] || TYPE_COLORS.default;
+            } else if (currentColorMode === 'component') {
+                const comp = components.get(node.id) || 0;
+                return COMPONENT_COLORS[comp % COMPONENT_COLORS.length];
+            } else if (currentColorMode === 'degree') {
+                const degree = degrees.get(node.id) || 0;
+                const maxDegree = Math.max(...degrees.values(), 1);
+                const t = degree / maxDegree;
+                // Interpolate from blue (low) to red (high)
+                return d3.interpolateViridis(t);
+            }
+            return TYPE_COLORS.default;
+        }
 
         // Escape HTML to prevent XSS
         function escapeHtml(text) {
@@ -441,14 +584,14 @@ def get_viewer_html() -> str:
 
             svg.call(zoom);
 
-            // Filter based on ghost visibility
+            // Filter based on ghost visibility and weight
             const showGhosts = document.getElementById('showGhosts').checked;
             const entities = showGhosts
                 ? graphData.entities
                 : graphData.entities.filter(e => e.on_branch);
             const entityIds = new Set(entities.map(e => e.id));
             const relations = graphData.relations.filter(
-                r => entityIds.has(r.from) && entityIds.has(r.to)
+                r => entityIds.has(r.from) && entityIds.has(r.to) && r.weight >= minWeight
             );
 
             // Create node map
@@ -470,12 +613,48 @@ def get_viewer_html() -> str:
 
             const nodes = Array.from(nodeMap.values());
 
-            // Create simulation
-            simulation = d3.forceSimulation(nodes)
-                .force('link', d3.forceLink(links).id(d => d.id).distance(100))
-                .force('charge', d3.forceManyBody().strength(-300))
-                .force('center', d3.forceCenter(width / 2, height / 2))
-                .force('collision', d3.forceCollide().radius(30));
+            // Find connected components for coloring
+            const components = findComponents(nodes, links);
+
+            // Create simulation based on layout type
+            simulation = d3.forceSimulation(nodes);
+
+            if (currentLayout === 'force') {
+                simulation
+                    .force('link', d3.forceLink(links).id(d => d.id).distance(100))
+                    .force('charge', d3.forceManyBody().strength(-300))
+                    .force('center', d3.forceCenter(width / 2, height / 2))
+                    .force('collision', d3.forceCollide().radius(30));
+            } else if (currentLayout === 'radial') {
+                // Radial layout - arrange by degree (hubs in center)
+                const maxDegree = Math.max(...degrees.values(), 1);
+                simulation
+                    .force('link', d3.forceLink(links).id(d => d.id).distance(80))
+                    .force('charge', d3.forceManyBody().strength(-100))
+                    .force('r', d3.forceRadial(d => {
+                        const degree = degrees.get(d.id) || 0;
+                        return 50 + (1 - degree / maxDegree) * Math.min(width, height) * 0.35;
+                    }, width / 2, height / 2).strength(0.8))
+                    .force('collision', d3.forceCollide().radius(25));
+            } else if (currentLayout === 'cluster') {
+                // Cluster by component
+                const numComponents = new Set(components.values()).size;
+                const angleStep = (2 * Math.PI) / Math.max(numComponents, 1);
+                const clusterRadius = Math.min(width, height) * 0.3;
+
+                simulation
+                    .force('link', d3.forceLink(links).id(d => d.id).distance(60))
+                    .force('charge', d3.forceManyBody().strength(-150))
+                    .force('x', d3.forceX(d => {
+                        const comp = components.get(d.id) || 0;
+                        return width / 2 + Math.cos(comp * angleStep) * clusterRadius;
+                    }).strength(0.3))
+                    .force('y', d3.forceY(d => {
+                        const comp = components.get(d.id) || 0;
+                        return height / 2 + Math.sin(comp * angleStep) * clusterRadius;
+                    }).strength(0.3))
+                    .force('collision', d3.forceCollide().radius(20));
+            }
 
             // Draw links
             const link = g.append('g')
@@ -499,7 +678,7 @@ def get_viewer_html() -> str:
             // Node circles
             node.append('circle')
                 .attr('r', d => 8 + Math.sqrt(degrees.get(d.id) || 1) * 3)
-                .attr('fill', d => TYPE_COLORS[d.type] || TYPE_COLORS.default)
+                .attr('fill', d => getNodeColor(d, degrees, components))
                 .attr('fill-opacity', d => d.on_branch ? 1 : 0.2);
 
             // Node labels
@@ -628,6 +807,54 @@ def get_viewer_html() -> str:
             document.getElementById('showLabels').addEventListener('change', (e) => {
                 d3.selectAll('.label').style('display', e.target.checked ? 'block' : 'none');
             });
+
+            // Layout selector
+            document.getElementById('layout').addEventListener('change', (e) => {
+                currentLayout = e.target.value;
+                render();
+            });
+
+            // Color mode selector
+            document.getElementById('colorMode').addEventListener('change', (e) => {
+                currentColorMode = e.target.value;
+                render();
+            });
+
+            // Weight filter slider
+            const weightSlider = document.getElementById('weightFilter');
+            const weightValue = document.getElementById('weightValue');
+            weightSlider.addEventListener('input', (e) => {
+                minWeight = parseFloat(e.target.value);
+                weightValue.textContent = minWeight.toFixed(1);
+                render();
+            });
+
+            // Refresh button (only shown in watch mode)
+            const refreshBtn = document.getElementById('refreshBtn');
+            if (window.API_ENABLED) {
+                refreshBtn.style.display = 'block';
+                refreshBtn.addEventListener('click', async () => {
+                    refreshBtn.disabled = true;
+                    refreshBtn.textContent = 'Loading...';
+                    try {
+                        const response = await fetch('/api/graph');
+                        if (response.ok) {
+                            graphData = await response.json();
+                            render();
+                            refreshBtn.textContent = 'Refreshed!';
+                            setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 1000);
+                        } else {
+                            refreshBtn.textContent = 'Error';
+                            setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 2000);
+                        }
+                    } catch (err) {
+                        console.error('Refresh failed:', err);
+                        refreshBtn.textContent = 'Error';
+                        setTimeout(() => { refreshBtn.textContent = 'Refresh'; }, 2000);
+                    }
+                    refreshBtn.disabled = false;
+                });
+            }
         }
 
         // Handle window resize
@@ -638,8 +865,13 @@ def get_viewer_html() -> str:
             }
         });
 
-        // Start
-        init();
+        // Start when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            // DOM already loaded, but wait a tick for any script tags to be parsed
+            setTimeout(init, 0);
+        }
     </script>
 </body>
 </html>'''
@@ -662,3 +894,33 @@ def ensure_viewer_exists(memory_dir: Path) -> Path:
         viewer_path.write_text(get_viewer_html())
 
     return viewer_path
+
+
+def create_standalone_viewer(data: dict, output_path: Path, api_enabled: bool = False) -> Path:
+    """Create a standalone HTML viewer with embedded data.
+
+    This avoids file:// CORS issues by embedding the JSON directly
+    into the HTML file as a script tag.
+
+    Args:
+        data: Graph data dict with entities and relations
+        output_path: Where to write the HTML file
+        api_enabled: If True, show refresh button for live reload
+
+    Returns:
+        Path to the created HTML file
+    """
+    html = get_viewer_html()
+
+    # Embed data as a script tag before the closing </body>
+    data_json = json.dumps(data)
+    api_flag = "true" if api_enabled else "false"
+    embedded_data = f'<script>window.API_ENABLED = {api_flag};</script>\n'
+    embedded_data += f'<script type="application/json" id="graph-data">{data_json}</script>'
+
+    # Insert before </body>
+    html = html.replace("</body>", f"{embedded_data}\n</body>")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(html)
+    return output_path

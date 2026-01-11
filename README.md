@@ -77,6 +77,13 @@ Mnemograph exposes these tools to Claude Code:
 | `open_nodes` | Get specific entities with their relations |
 | `search_semantic` | Vector similarity search (meaning-based) |
 | `memory_context` | Tiered retrieval: shallow (summary), medium (search+neighbors), deep (subgraph) |
+| `get_state_at` | Time travel: view graph state at any point in history |
+| `diff_timerange` | Show what changed between two points in time |
+| `get_entity_history` | Full changelog for a specific entity |
+| `get_relation_weight` | Get weight breakdown (recency, co-access, explicit) |
+| `set_relation_importance` | Set explicit importance weight (0.0-1.0) |
+| `get_strongest_connections` | Find entity's most important connections |
+| `get_weak_relations` | Find pruning candidates (low-weight relations) |
 
 ### CLI Tools
 
@@ -98,7 +105,17 @@ claude-mem init                  # Initialize memory as git repo
 claude-mem status                # Show uncommitted changes
 claude-mem commit -m "message"   # Commit current state
 claude-mem log                   # View commit history
+claude-mem graph                 # Open interactive graph viewer
+claude-mem graph --watch         # Live reload mode (refresh button)
+claude-mem --global graph        # Use global memory (~/.claude/memory)
 ```
+
+**Graph Visualization** — Interactive D3.js viewer:
+
+- **Layout algorithms**: Force-directed, Radial (hubs at center), Clustered (by component)
+- **Color modes**: By entity type, connected component, or degree centrality
+- **Edge weight slider**: Filter connections by strength
+- **Live refresh**: `--watch` mode with Refresh button for real-time updates
 
 ## Architecture
 

@@ -1499,4 +1499,22 @@ If I'm going in circles, ask me to:
 
 ---
 
+## Implementation Status (v0.1.2)
+
+**Completed:**
+- ✅ Phase 0: Bootstrap (MCP protocol understanding)
+- ✅ Phase 1: Event-sourced core (append-only log, state materialization)
+- ✅ Phase 2: Richer node model (entity types, observations, access tracking)
+- ✅ Phase 3: Vector index (sqlite-vec with sentence-transformers)
+- ✅ Phase 4: Tiered retrieval (shallow/medium/deep context)
+- ✅ Phase 6: VCS CLI (git-based version control)
+- ✅ Phase 7: VCS CLI extensions (event rewind, time travel)
+- ✅ Edge weights (recency, co-access, explicit importance)
+- ✅ Graph visualization (D3.js viewer with layout algorithms, color modes, live refresh)
+
+**Deferred:**
+- Phase 5: Sub-agent synthesis (parked for now)
+
+---
+
 Good luck, future me. Build something great. 🚀

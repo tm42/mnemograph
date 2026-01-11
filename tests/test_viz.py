@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from mnemograph.engine import MemoryEngine
-from mnemograph.viz import export_graph_for_viz, get_viewer_html, ensure_viewer_exists
+from mnemograph.viz import export_graph_for_viz, get_viewer_html, ensure_viewer_exists, create_standalone_viewer
 
 
 class TestExportGraphForViz:
@@ -350,3 +350,76 @@ class TestExportFilenames:
 
             # Branch name should be in filename (with / replaced)
             assert "feature-auth" in output_path.name
+
+
+class TestCreateStandaloneViewer:
+    """Tests for create_standalone_viewer function."""
+
+    def test_creates_standalone_html_with_embedded_data(self):
+        """Test that standalone viewer embeds JSON data."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "viewer.html"
+
+            data = {
+                "meta": {"branch": "main", "entity_count": 1, "relation_count": 0},
+                "entities": [{"id": "e1", "name": "Test", "type": "concept", "observations": ["obs1"], "on_branch": True}],
+                "relations": [],
+            }
+
+            result = create_standalone_viewer(data, output_path)
+
+            assert result == output_path
+            assert output_path.exists()
+
+            content = output_path.read_text()
+            # Should have graph-data script tag
+            assert 'id="graph-data"' in content
+            # Should contain our entity data
+            assert "Test" in content
+            assert "concept" in content
+
+    def test_standalone_viewer_is_valid_html(self):
+        """Test that standalone viewer produces valid HTML."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "viewer.html"
+
+            data = {
+                "meta": {"branch": "test", "entity_count": 0, "relation_count": 0},
+                "entities": [],
+                "relations": [],
+            }
+
+            create_standalone_viewer(data, output_path)
+            content = output_path.read_text()
+
+            assert content.startswith("<!DOCTYPE html>")
+            assert "</html>" in content
+            assert "<script" in content
+
+    def test_standalone_viewer_creates_parent_directories(self):
+        """Test that parent directories are created."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "nested" / "path" / "viewer.html"
+
+            data = {"meta": {}, "entities": [], "relations": []}
+
+            create_standalone_viewer(data, output_path)
+
+            assert output_path.exists()
+            assert (Path(tmpdir) / "nested" / "path").is_dir()
+
+    def test_standalone_viewer_api_enabled_flag(self):
+        """Test that api_enabled flag injects API_ENABLED variable."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "viewer.html"
+            data = {"meta": {}, "entities": [], "relations": []}
+
+            # Without api_enabled
+            create_standalone_viewer(data, output_path, api_enabled=False)
+            content = output_path.read_text()
+            assert "window.API_ENABLED = false" in content
+
+            # With api_enabled
+            create_standalone_viewer(data, output_path, api_enabled=True)
+            content = output_path.read_text()
+            assert "window.API_ENABLED = true" in content
