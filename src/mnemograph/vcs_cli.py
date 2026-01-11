@@ -837,6 +837,58 @@ def suggest(ctx, entity, limit, as_json):
     console.print(table)
 
 
+@cli.command()
+@click.option("--reason", "-m", help="Reason for clearing (recorded in event)")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def clear(ctx, reason, yes, as_json):
+    """Clear all entities and relations from the graph.
+
+    This is event-sourced — you can rewind to before the clear
+    using 'mg show --at <timestamp>' or view history with 'mg log'.
+
+    Use sparingly! This is a destructive operation.
+
+    Examples:
+        mg clear                           # Interactive confirmation
+        mg clear -y                        # Skip confirmation
+        mg clear -m "Starting fresh for v2"  # Record reason
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    entity_count = len(engine.state.entities)
+    relation_count = len(engine.state.relations)
+
+    if entity_count == 0 and relation_count == 0:
+        if as_json:
+            console.print(json.dumps({"status": "empty", "message": "Graph is already empty"}, indent=2))
+        else:
+            console.print("[yellow]![/yellow] Graph is already empty. Nothing to clear.")
+        return
+
+    # Confirmation prompt
+    if not yes:
+        console.print(f"[yellow]⚠  This will clear ALL {entity_count} entities and {relation_count} relations.[/yellow]")
+        console.print("[dim]   (Event is recorded — can rewind with 'mg show --at <timestamp>')[/dim]")
+        console.print()
+        if not click.confirm("Are you sure you want to clear the graph?", default=False):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    # Clear the graph
+    result = engine.clear_graph(reason=reason or "")
+
+    if as_json:
+        console.print(json.dumps(result, indent=2, default=str))
+    else:
+        console.print(f"[green]✓[/green] Cleared {result['entities_cleared']} entities, {result['relations_cleared']} relations")
+        if reason:
+            console.print(f"   Reason: {reason}")
+        console.print("[dim]   Tip: Use 'mg show --at <timestamp>' to view graph before clear[/dim]")
+
+
 # --- Visualization Commands ---
 
 

@@ -139,6 +139,7 @@ EventOp = Literal[
     "add_observation",
     "delete_observation",
     "update_weight",  # Explicit weight change on a relation
+    "clear_graph",  # Reset graph to empty state
 ]
 
 

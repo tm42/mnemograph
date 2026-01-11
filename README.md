@@ -102,6 +102,8 @@ Mnemograph exposes these tools via MCP:
 | `merge_entities` | Merge duplicate entities (consolidates observations, redirects relations) |
 | `get_graph_health` | Assess graph quality: orphans, duplicates, overloaded entities |
 | `suggest_relations` | Suggest potential relations based on semantic similarity |
+| `clear_graph` | Clear all entities/relations (event-sourced, can rewind) |
+| `create_entities_force` | Create entities bypassing duplicate check |
 
 ### CLI Tools
 
@@ -134,6 +136,8 @@ mg health --fix          # Interactive cleanup mode
 mg similar "React"       # Find entities similar to "React" (duplicate check)
 mg orphans               # List entities with no relations
 mg suggest "FastAPI"     # Suggest relations for an entity
+mg clear                 # Clear all entities and relations (with confirmation)
+mg clear -y -m "reason"  # Clear without confirmation, record reason
 ```
 
 **Note**: Global options (`--global`, `--memory-path`) come *before* the subcommand.
@@ -177,6 +181,34 @@ mg suggest "FastAPI"     # Suggest relations for an entity
 | `question` | Open unknowns | "Should we add real-time sync?" |
 | `learning` | Discoveries | "pytest fixtures simplify test setup" |
 | `entity` | Generic (people, files, etc.) | "Alice", "config.yaml" |
+
+## Topic Convention
+
+Use **topic entities** as entry points for browsing related knowledge:
+
+```python
+# Create topic entry points
+create_entities([
+    {"name": "topic/projects", "entityType": "entity"},
+    {"name": "topic/decisions", "entityType": "entity"},
+    {"name": "topic/patterns", "entityType": "entity"},
+])
+
+# Link entities to their topics
+create_relations([
+    {"from": "auth-service", "to": "topic/projects", "relationType": "part_of"},
+    {"from": "Decision: Use Redis", "to": "topic/decisions", "relationType": "part_of"},
+])
+```
+
+**Standard topics:**
+- `topic/projects` — Project entities
+- `topic/decisions` — Architectural decisions
+- `topic/patterns` — Patterns and practices
+- `topic/learnings` — Key discoveries
+- `topic/questions` — Open questions
+
+This makes it easy to query "what decisions have we made?" by exploring `topic/decisions`.
 
 ## Development
 

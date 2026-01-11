@@ -44,8 +44,8 @@ async def list_tools() -> list[Tool]:
             name="create_entities",
             description=(
                 "Create new entities in the knowledge graph. "
-                "AUTO-CHECKS for duplicates — returns warning if similar entity exists (use find_similar first if unsure). "
-                "ALWAYS connect new entities with create_relations after. "
+                "AUTO-BLOCKS if similar entity exists (>85% match) — returns warning with suggestion. "
+                "Use create_entities_force to override. "
                 "Types: concept, decision, project, pattern, question, learning. "
                 "Naming: use canonical names ('Python' not 'python language'), prefix decisions ('Decision: Use Redis')."
             ),
@@ -73,6 +73,44 @@ async def list_tools() -> list[Tool]:
                                     "type": "array",
                                     "items": {"type": "string"},
                                     "description": "Atomic facts (one fact per string). Use prefixes: 'Gotcha: ...', 'Warning: ...', 'Status: ...'",
+                                },
+                            },
+                            "required": ["name", "entityType"],
+                        },
+                    }
+                },
+                "required": ["entities"],
+            },
+        ),
+        Tool(
+            name="create_entities_force",
+            description=(
+                "Create entities BYPASSING duplicate check. "
+                "Use when you're certain the entity is distinct despite similar names "
+                "(e.g., 'React' library vs 'React' conference)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entities": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Entity name",
+                                },
+                                "entityType": {
+                                    "type": "string",
+                                    "enum": [
+                                        "concept", "decision", "project",
+                                        "pattern", "question", "learning", "entity"
+                                    ],
+                                },
+                                "observations": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
                                 },
                             },
                             "required": ["name", "entityType"],
@@ -530,6 +568,22 @@ async def list_tools() -> list[Tool]:
                 "required": ["entity"],
             },
         ),
+        Tool(
+            name="clear_graph",
+            description=(
+                "Clear ALL entities and relations from the graph. Use sparingly! "
+                "Event-sourced: can rewind to before clear with get_state_at(timestamp)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional reason for clearing (recorded in event history)",
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -540,7 +594,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     logger.debug(f"Arguments: {arguments}")
     try:
         if name == "create_entities":
-            created = engine.create_entities(arguments["entities"])
+            results = engine.create_entities(arguments["entities"])
+            # Results can be Entity objects or warning dicts
+            output = []
+            for r in results:
+                if isinstance(r, dict):
+                    output.append(r)  # Warning dict
+                else:
+                    output.append(r.model_dump(mode="json"))  # Entity object
+            return [TextContent(type="text", text=json.dumps(output, indent=2, default=str))]
+
+        elif name == "create_entities_force":
+            # Bypass duplicate check
+            created = engine.create_entities_force(arguments["entities"])
             result = [e.model_dump(mode="json") for e in created]
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
@@ -690,6 +756,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 entity=arguments["entity"],
                 limit=arguments.get("limit", 5),
             )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "clear_graph":
+            result = engine.clear_graph(reason=arguments.get("reason", ""))
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:

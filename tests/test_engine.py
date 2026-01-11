@@ -65,22 +65,22 @@ def test_get_hot_entities():
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
         engine.create_entities([
-            {"name": "Popular", "entityType": "concept", "observations": ["hot topic"]},
-            {"name": "Unpopular", "entityType": "concept", "observations": ["cold topic"]},
+            {"name": "Hot Topic", "entityType": "concept", "observations": ["hot stuff"]},
+            {"name": "Cold Topic", "entityType": "concept", "observations": ["cold stuff"]},
         ])
 
-        # Access "Popular" multiple times
+        # Access "Hot Topic" multiple times
         engine.search_nodes("hot")
         engine.search_nodes("hot")
         engine.search_nodes("hot")
 
-        # Access "Unpopular" once
+        # Access "Cold Topic" once
         engine.search_nodes("cold")
 
         hot = engine.get_hot_entities(limit=2)
-        assert hot[0].name == "Popular"
+        assert hot[0].name == "Hot Topic"
         assert hot[0].access_count == 3
-        assert hot[1].name == "Unpopular"
+        assert hot[1].name == "Cold Topic"
         assert hot[1].access_count == 1
 
 
@@ -285,7 +285,8 @@ def test_find_similar_finds_variants():
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
-        engine.create_entities([
+        # Use create_entities_force since we're intentionally creating similar entities
+        engine.create_entities_force([
             {"name": "React", "entityType": "concept"},
             {"name": "ReactJS", "entityType": "concept"},
             {"name": "React Native", "entityType": "concept"},
@@ -336,7 +337,8 @@ def test_merge_entities_basic():
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
-        engine.create_entities([
+        # Use force since we're intentionally creating similar entities to merge
+        engine.create_entities_force([
             {"name": "ReactJS", "entityType": "concept", "observations": ["A JS framework"]},
             {"name": "React", "entityType": "concept", "observations": ["Popular UI library"]},
             {"name": "Frontend", "entityType": "concept"},
@@ -406,8 +408,8 @@ def test_get_graph_health_detects_issues():
             {"name": "Orphan", "entityType": "concept"},
         ])
 
-        # Create potential duplicates
-        engine.create_entities([
+        # Create potential duplicates (use force to bypass auto-check)
+        engine.create_entities_force([
             {"name": "React", "entityType": "concept"},
             {"name": "ReactJS", "entityType": "concept"},
         ])
@@ -476,3 +478,205 @@ def test_count_connected_components():
         # 3 components: A cluster, B cluster, Orphan
         count = engine._count_connected_components()
         assert count == 3
+
+
+# --- Clear Graph Tests ---
+
+
+def test_clear_graph_basic():
+    """Test clear_graph removes all entities and relations."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create some data
+        engine.create_entities([
+            {"name": "Entity A", "entityType": "concept"},
+            {"name": "Entity B", "entityType": "concept"},
+            {"name": "Entity C", "entityType": "project"},
+        ])
+
+        engine.create_relations([
+            {"from": "Entity A", "to": "Entity B", "relationType": "uses"},
+        ])
+
+        assert len(engine.state.entities) == 3
+        assert len(engine.state.relations) == 1
+
+        # Clear the graph
+        result = engine.clear_graph(reason="Testing clear")
+
+        assert result["status"] == "cleared"
+        assert result["entities_cleared"] == 3
+        assert result["relations_cleared"] == 1
+        assert result["reason"] == "Testing clear"
+
+        # Verify state is empty
+        assert len(engine.state.entities) == 0
+        assert len(engine.state.relations) == 0
+
+
+def test_clear_graph_event_sourced():
+    """Test clear_graph is event-sourced (can be rewound)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create some data
+        engine.create_entities([
+            {"name": "Entity A", "entityType": "concept"},
+        ])
+
+        # Get timestamp before clear
+        from datetime import datetime, timezone
+        import time
+        time.sleep(0.01)  # Ensure timestamp difference
+        before_clear = datetime.now(timezone.utc)
+        time.sleep(0.01)
+
+        # Clear the graph
+        engine.clear_graph()
+
+        assert len(engine.state.entities) == 0
+
+        # Rewind to before clear
+        state_before = engine.state_at(before_clear)
+
+        assert len(state_before.entities) == 1
+        assert any(e.name == "Entity A" for e in state_before.entities.values())
+
+
+def test_clear_graph_clears_indices():
+    """Test clear_graph also clears O(1) indices."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        engine.create_entities([
+            {"name": "Connected A", "entityType": "concept"},
+            {"name": "Connected B", "entityType": "concept"},
+        ])
+
+        engine.create_relations([
+            {"from": "Connected A", "to": "Connected B", "relationType": "uses"},
+        ])
+
+        # Verify indices have data
+        assert len(engine.state._name_to_id) == 2
+        assert len(engine.state._connected_entities) == 2
+
+        # Clear
+        engine.clear_graph()
+
+        # Verify indices are cleared
+        assert len(engine.state._name_to_id) == 0
+        assert len(engine.state._outgoing) == 0
+        assert len(engine.state._incoming) == 0
+        assert len(engine.state._connected_entities) == 0
+
+
+# --- Auto-Duplicate Check Tests ---
+
+
+def test_create_entities_blocks_duplicate():
+    """Test create_entities blocks when similar entity exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create initial entity
+        engine.create_entities([
+            {"name": "React", "entityType": "concept"},
+        ])
+
+        # Try to create similar entity - should be blocked
+        results = engine.create_entities([
+            {"name": "ReactJS", "entityType": "concept"},
+        ])
+
+        assert len(results) == 1
+        assert isinstance(results[0], dict)
+        assert results[0]["status"] == "duplicate_warning"
+        assert "React" in results[0]["warning"]
+        assert results[0]["name"] == "ReactJS"
+
+        # Verify entity was NOT created
+        assert len(engine.state.entities) == 1
+
+
+def test_create_entities_allows_distinct():
+    """Test create_entities allows sufficiently different names."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create initial entity
+        engine.create_entities([
+            {"name": "React", "entityType": "concept"},
+        ])
+
+        # Try to create clearly different entity - should succeed
+        results = engine.create_entities([
+            {"name": "Vue", "entityType": "concept"},
+        ])
+
+        assert len(results) == 1
+        # Should be an Entity, not a warning dict
+        from mnemograph.models import Entity
+        assert isinstance(results[0], Entity)
+        assert results[0].name == "Vue"
+
+        # Verify both entities exist
+        assert len(engine.state.entities) == 2
+
+
+def test_create_entities_force_bypasses_check():
+    """Test create_entities_force bypasses duplicate check."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create initial entity
+        engine.create_entities([
+            {"name": "React", "entityType": "concept"},
+        ])
+
+        # Use force to create similar entity
+        results = engine.create_entities_force([
+            {"name": "ReactJS", "entityType": "concept", "observations": ["Alternative name"]},
+        ])
+
+        assert len(results) == 1
+        from mnemograph.models import Entity
+        assert isinstance(results[0], Entity)
+        assert results[0].name == "ReactJS"
+
+        # Verify both entities exist
+        assert len(engine.state.entities) == 2
+
+
+def test_create_entities_mixed_results():
+    """Test create_entities can return mix of created and blocked."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create initial entity
+        engine.create_entities([
+            {"name": "React", "entityType": "concept"},
+        ])
+
+        # Try to create one similar, one distinct
+        results = engine.create_entities([
+            {"name": "ReactJS", "entityType": "concept"},  # Should be blocked
+            {"name": "Angular", "entityType": "concept"},  # Should succeed
+        ])
+
+        assert len(results) == 2
+
+        # First should be warning
+        assert isinstance(results[0], dict)
+        assert results[0]["status"] == "duplicate_warning"
+
+        # Second should be Entity
+        from mnemograph.models import Entity
+        assert isinstance(results[1], Entity)
+        assert results[1].name == "Angular"
+
+        # Verify correct entities exist (React and Angular, not ReactJS)
+        assert len(engine.state.entities) == 2
+        names = {e.name for e in engine.state.entities.values()}
+        assert names == {"React", "Angular"}

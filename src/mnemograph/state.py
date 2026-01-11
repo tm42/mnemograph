@@ -195,6 +195,16 @@ def apply_event(state: GraphState, event: MemoryEvent) -> None:
                         rel.explicit_weight = new_value
                     break
 
+    elif op == "clear_graph":
+        # Reset to empty state — clears all entities and relations
+        # Note: We clear the data structures but keep the same GraphState object
+        state.entities.clear()
+        state.relations.clear()
+        state._name_to_id.clear()
+        state._outgoing.clear()
+        state._incoming.clear()
+        state._connected_entities.clear()
+
     state.last_event_id = event.id
 
 

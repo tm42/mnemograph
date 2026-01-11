@@ -24,6 +24,7 @@ DEEP_CONTEXT_TOKENS = 5000
 # Similarity and weight thresholds
 DEFAULT_SIMILARITY_THRESHOLD = 0.7
 DUPLICATE_DETECTION_THRESHOLD = 0.8
+DUPLICATE_AUTO_BLOCK_THRESHOLD = 0.8  # Threshold for auto-blocking on create
 WEAK_RELATION_THRESHOLD = 0.2
 PRUNING_CANDIDATE_THRESHOLD = 0.1
 SUGGEST_RELATION_CONFIDENCE_THRESHOLD = 0.4
@@ -125,10 +126,42 @@ class MemoryEngine:
 
     # --- Entity operations ---
 
-    def create_entities(self, entities: list[dict]) -> list[Entity]:
-        """Create multiple entities."""
-        created = []
+    def create_entities(
+        self,
+        entities: list[dict],
+        force: bool = False,
+    ) -> list[Entity | dict]:
+        """Create multiple entities with auto-duplicate checking.
+
+        Args:
+            entities: List of entity dicts to create
+            force: If True, bypass duplicate check (like create_entities_force)
+
+        Returns:
+            List of created Entity objects OR warning dicts for blocked entities.
+            Warning dicts have status="duplicate_warning" and include similar entities.
+        """
+        results: list[Entity | dict] = []
+
         for entity_data in entities:
+            name = entity_data["name"]
+
+            # Auto-duplicate check (unless force=True)
+            if not force:
+                similar = self.find_similar(name, threshold=DUPLICATE_AUTO_BLOCK_THRESHOLD)
+                if similar:
+                    top = similar[0]
+                    # Return warning instead of creating - entity NOT created
+                    results.append({
+                        "status": "duplicate_warning",
+                        "name": name,
+                        "warning": f"Similar entity exists: '{top['name']}' ({top['similarity']:.0%} match)",
+                        "similar": similar,
+                        "suggestion": f"Use add_observations('{top['name']}', ...) instead",
+                        "override": "Use create_entities with force=True to create anyway",
+                    })
+                    continue
+
             # Build observations from input
             observations = [
                 Observation(text=obs, source=self.session_id)
@@ -136,14 +169,24 @@ class MemoryEngine:
             ]
 
             entity = Entity(
-                name=entity_data["name"],
+                name=name,
                 type=entity_data.get("entityType", entity_data.get("type", "entity")),
                 observations=observations,
                 created_by=self.session_id,
             )
             self._emit("create_entity", entity.model_dump(mode="json"))
-            created.append(entity)
-        return created
+            results.append(entity)
+
+        return results
+
+    def create_entities_force(self, entities: list[dict]) -> list[Entity]:
+        """Create entities bypassing duplicate check.
+
+        Use when you're certain the entity is distinct despite similar names.
+        """
+        results = self.create_entities(entities, force=True)
+        # Filter to only Entity objects (no warnings when force=True)
+        return [r for r in results if isinstance(r, Entity)]
 
     def delete_entities(self, names: list[str]) -> int:
         """Delete entities by name. Returns count of deleted."""
@@ -977,6 +1020,32 @@ class MemoryEngine:
             "status": "session_ended",
             "summary_stored": stored_summary,
             "tip": "Key learnings can be stored with create_entities or add_observations anytime.",
+        }
+
+    def clear_graph(self, reason: str = "") -> dict:
+        """Clear all entities and relations from the graph.
+
+        This is event-sourced — you can rewind to before the clear using
+        get_state_at() with a timestamp before the clear event.
+
+        Args:
+            reason: Optional reason for clearing (recorded in event)
+
+        Returns:
+            Confirmation with entity/relation counts cleared
+        """
+        counts = {
+            "entities_cleared": len(self.state.entities),
+            "relations_cleared": len(self.state.relations),
+        }
+
+        self._emit("clear_graph", {"reason": reason})
+
+        return {
+            "status": "cleared",
+            **counts,
+            "reason": reason if reason else None,
+            "tip": "Use get_state_at(timestamp) to view graph before clear, or check 'mg log' for history",
         }
 
     # --- Graph Coherence Tools ---
