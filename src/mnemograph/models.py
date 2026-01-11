@@ -140,6 +140,7 @@ EventOp = Literal[
     "delete_observation",
     "update_weight",  # Explicit weight change on a relation
     "clear_graph",  # Reset graph to empty state
+    "compact",  # History compaction — clears state, followed by recreate events
 ]
 
 

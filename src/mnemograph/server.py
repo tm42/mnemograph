@@ -635,6 +635,59 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        # --- Recovery Tools ---
+        Tool(
+            name="reload",
+            description=(
+                "Reload graph state from events.jsonl on disk. "
+                "Use after: git operations (checkout, restore), external edits to events.jsonl, "
+                "or any time MCP server seems out of sync."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="rewind",
+            description=(
+                "Rewind graph to a previous state using git. Fast undo, audit trail in git only. "
+                "For audit-preserving restore, use restore_state_at() instead."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "Go back N commits that touched events.jsonl",
+                    },
+                    "to_commit": {
+                        "type": "string",
+                        "description": "Or specify exact commit hash",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="restore_state_at",
+            description=(
+                "Restore graph to state at a specific timestamp. "
+                "Emits clear + recreate events — full audit trail preserved. "
+                "Use get_state_at() first to preview what will be restored."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "timestamp": {
+                        "type": "string",
+                        "description": "ISO datetime or relative ('2 hours ago', 'yesterday')",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why restoring (recorded in events)",
+                    },
+                },
+                "required": ["timestamp"],
+            },
+        ),
     ]
 
 
@@ -821,6 +874,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "clear_graph":
             result = engine.clear_graph(reason=arguments.get("reason", ""))
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        # --- Recovery Tools ---
+        elif name == "reload":
+            result = engine.reload()
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "rewind":
+            result = engine.rewind(
+                steps=arguments.get("steps", 1),
+                to_commit=arguments.get("to_commit"),
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "restore_state_at":
+            result = engine.restore_state_at(
+                timestamp=arguments["timestamp"],
+                reason=arguments.get("reason", ""),
+            )
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:

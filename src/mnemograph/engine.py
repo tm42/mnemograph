@@ -1,6 +1,8 @@
 """Memory engine - orchestrates event store, state, and operations."""
 
 import json
+import subprocess
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +46,58 @@ EMBEDDING_SIMILARITY_WEIGHT = 0.8
 AFFIX_MATCH_BONUS = 0.2
 
 
+def _check_git_repo(memory_dir: Path) -> bool:
+    """Check if memory directory is in a git repository.
+
+    Returns True if in a git repo, False otherwise.
+    Emits a warning if not in a git repo.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=memory_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            warnings.warn(
+                f"Memory directory {memory_dir} is not in a git repository. "
+                "Git-based features (rewind, compact safety) will not work. "
+                "Consider initializing a git repo with 'git init'.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return False
+        return True
+    except FileNotFoundError:
+        warnings.warn(
+            "git command not found. Git-based features (rewind, compact safety) "
+            "will not work.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return False
+
+
+def _get_git_root(memory_dir: Path) -> Path | None:
+    """Get the root directory of the git repository containing memory_dir.
+
+    Returns None if not in a git repo.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=memory_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return Path(result.stdout.strip())
+        return None
+    except FileNotFoundError:
+        return None
+
+
 class MemoryEngine:
     """Main entry point for memory operations.
 
@@ -65,6 +119,10 @@ class MemoryEngine:
         self._vector_index = None  # Lazy-loaded
         self._co_access_cache_path = memory_dir / "co_access_cache.json"
         self._load_co_access_cache()
+
+        # Check git repo status (warns if not in git)
+        self._in_git_repo = _check_git_repo(memory_dir)
+        self._git_root = _get_git_root(memory_dir) if self._in_git_repo else None
 
     def _load_state(self) -> GraphState:
         """Load state from events."""
@@ -981,6 +1039,11 @@ HISTORY (when needed):
   diff_timerange(start, end)       → what changed between times
   get_entity_history(entity)       → changelog for one entity
 
+UNDO / RECOVERY:
+  reload()                         → sync MCP server with disk (after git ops)
+  rewind(steps=1)                  → quick undo via git
+  restore_state_at(timestamp)      → restore with full audit trail
+
 WEIGHTS (rarely):
   get_relation_weight(id)          → see weight breakdown
   set_relation_importance(id, 0-1) → boost/demote relation
@@ -1074,6 +1137,168 @@ TIP: Start with recall() to see what's known, then remember() or add_observation
             **counts,
             "reason": reason if reason else None,
             "tip": "Use get_state_at(timestamp) to view graph before clear, or check 'mg log' for history",
+            "undo_options": {
+                "quick": "rewind() — uses git, fast, audit trail in git only",
+                "audit": "restore_state_at('5 minutes ago') — preserves full audit trail in events",
+            },
+        }
+
+    # --- Recovery Operations ---
+
+    def reload(self) -> dict:
+        """Reload graph state from events.jsonl on disk.
+
+        Use this after:
+        - Git operations (checkout, restore, revert)
+        - External edits to events.jsonl
+        - Any time MCP server seems out of sync with disk
+
+        Returns:
+            Current state after reload with entity/relation counts
+        """
+        events = self.event_store.read_all()
+        self.state = materialize(events)
+        self._load_co_access_cache()
+
+        return {
+            "status": "reloaded",
+            "entities": len(self.state.entities),
+            "relations": len(self.state.relations),
+            "events_processed": len(events),
+        }
+
+    def rewind(self, steps: int = 1, to_commit: str | None = None) -> dict:
+        """Rewind graph to a previous state using git.
+
+        This restores events.jsonl from git history and reloads.
+        Fast, but audit trail is only in git (not in events).
+
+        For audit-preserving restore, use restore_state_at() instead.
+
+        Args:
+            steps: Go back N commits that touched events.jsonl (default: 1)
+            to_commit: Or specify exact commit hash
+
+        Returns:
+            Status with entity/relation counts after rewind
+
+        Raises:
+            RuntimeError: If not in a git repository or git operation fails
+        """
+        if not self._in_git_repo:
+            return {
+                "status": "error",
+                "error": "Not in a git repository. Cannot use git-based rewind.",
+                "tip": "Use restore_state_at() for event-based restore instead.",
+            }
+
+        events_path = self.event_store.path
+        relative_path = events_path.relative_to(self._git_root) if self._git_root else events_path
+
+        if to_commit:
+            commit = to_commit
+        else:
+            # Find the Nth commit that touched events.jsonl
+            result = subprocess.run(
+                ["git", "log", "--oneline", "--follow", "-n", str(steps + 1), "--", str(relative_path)],
+                cwd=self._git_root,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                return {
+                    "status": "error",
+                    "error": f"Failed to get git history: {result.stderr}",
+                }
+
+            commits = result.stdout.strip().split("\n")
+            if len(commits) <= steps:
+                return {
+                    "status": "error",
+                    "error": f"Not enough history: only {len(commits)} commits found, requested {steps} steps back",
+                }
+            commit = commits[steps].split()[0]  # Get commit hash from "abc123 commit msg"
+
+        # Git checkout the file at that commit
+        result = subprocess.run(
+            ["git", "checkout", commit, "--", str(relative_path)],
+            cwd=self._git_root,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            return {
+                "status": "error",
+                "error": f"Git restore failed: {result.stderr}",
+            }
+
+        # Reload state from restored file
+        reload_result = self.reload()
+
+        return {
+            "status": "rewound",
+            "restored_to_commit": commit,
+            "entities": reload_result["entities"],
+            "relations": reload_result["relations"],
+            "note": "Audit trail in git only. Use restore_state_at() for event-based restore.",
+        }
+
+    def restore_state_at(self, timestamp: str, reason: str = "") -> dict:
+        """Restore graph to state at a specific timestamp.
+
+        Unlike rewind() which uses git, this:
+        1. Materializes state at that timestamp
+        2. Emits clear_graph event
+        3. Emits events to recreate that state
+
+        Full audit trail preserved — events show the restore happened.
+
+        Args:
+            timestamp: ISO format or relative ("2 hours ago", "yesterday")
+            reason: Why restoring (recorded in clear event)
+
+        Returns:
+            Status with entity/relation counts after restore
+        """
+        # Parse timestamp
+        ts = parse_time_reference(timestamp)
+
+        # Get past state
+        events = self.event_store.read_all()
+        past_state = materialize_at(events, ts)
+
+        if not past_state.entities:
+            return {
+                "status": "error",
+                "error": f"No entities found at {timestamp}",
+                "tip": "Use get_state_at() to preview state before restoring.",
+            }
+
+        # Clear current graph (recorded in events)
+        clear_reason = f"Restoring to {timestamp}"
+        if reason:
+            clear_reason += f": {reason}"
+        self._emit("clear_graph", {"reason": clear_reason})
+
+        # Recreate entities from past state (recorded in events)
+        for entity in past_state.entities.values():
+            # Emit create_entity with original data
+            entity_data = entity.model_dump(mode="json")
+            self._emit("create_entity", entity_data)
+
+        # Recreate relations from past state
+        for relation in past_state.relations:
+            relation_data = relation.model_dump(mode="json")
+            self._emit("create_relation", relation_data)
+
+        return {
+            "status": "restored",
+            "restored_to": timestamp,
+            "resolved_timestamp": ts.isoformat(),
+            "entities": len(self.state.entities),
+            "relations": len(self.state.relations),
+            "note": "Full audit trail preserved in events.",
         }
 
     # --- Graph Coherence Tools ---

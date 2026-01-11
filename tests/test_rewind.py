@@ -307,3 +307,165 @@ class TestRewindIntegration:
         state = materialize_at(events, ts_delete)
         assert len(state.entities) == 1  # Only e2 remains
         assert len(state.relations) == 0  # Cascade deleted
+
+
+# --- Recovery Operations Tests ---
+
+import tempfile
+from pathlib import Path
+from mnemograph.engine import MemoryEngine
+
+
+class TestReload:
+    """Tests for reload() functionality."""
+
+    def test_reload_syncs_with_disk(self):
+        """Reload should re-read events from disk."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test")
+
+            # Create an entity
+            engine.create_entities([
+                {"name": "Test", "entityType": "concept"},
+            ])
+            assert len(engine.state.entities) == 1
+
+            # Simulate external modification by creating new engine
+            # (which reads same file)
+            engine2 = MemoryEngine(Path(tmpdir), "test2")
+            engine2.create_entities([
+                {"name": "Added", "entityType": "concept"},
+            ])
+
+            # Original engine doesn't see it yet
+            assert len(engine.state.entities) == 1
+
+            # After reload, it should
+            result = engine.reload()
+            assert result["status"] == "reloaded"
+            assert result["entities"] == 2
+
+    def test_reload_returns_counts(self):
+        """Reload should return entity/relation counts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test")
+
+            engine.create_entities([
+                {"name": "A", "entityType": "concept"},
+                {"name": "B", "entityType": "concept"},
+            ])
+            engine.create_relations([
+                {"from": "A", "to": "B", "relationType": "links_to"},
+            ])
+
+            result = engine.reload()
+            assert result["entities"] == 2
+            assert result["relations"] == 1
+            assert result["events_processed"] >= 3
+
+
+class TestRestoreStateAt:
+    """Tests for restore_state_at() functionality."""
+
+    def test_restore_to_past(self):
+        """Should restore graph to past state."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test")
+
+            # Create initial entity
+            engine.create_entities([
+                {"name": "Initial", "entityType": "concept"},
+            ])
+
+            # Wait a tiny bit, then create more
+            import time
+            time.sleep(0.01)
+            ts_before = datetime.now(timezone.utc)
+            time.sleep(0.01)
+
+            engine.create_entities([
+                {"name": "Later", "entityType": "concept"},
+            ])
+
+            assert len(engine.state.entities) == 2
+
+            # Restore to before "Later" was created
+            result = engine.restore_state_at(ts_before.isoformat())
+
+            assert result["status"] == "restored"
+            assert result["entities"] == 1
+
+            # Verify only "Initial" exists
+            names = [e.name for e in engine.state.entities.values()]
+            assert "Initial" in names
+            assert "Later" not in names
+
+    def test_restore_with_reason(self):
+        """Reason should be recorded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test")
+
+            engine.create_entities([
+                {"name": "Test", "entityType": "concept"},
+            ])
+
+            import time
+            time.sleep(0.01)
+
+            result = engine.restore_state_at(
+                datetime.now(timezone.utc).isoformat(),
+                reason="Testing restore"
+            )
+
+            assert result["status"] == "restored"
+            # Check that clear_graph event has the reason
+            events = engine.event_store.read_all()
+            clear_events = [e for e in events if e.op == "clear_graph"]
+            assert len(clear_events) >= 1
+            assert "Testing restore" in clear_events[-1].data.get("reason", "")
+
+    def test_restore_empty_state_error(self):
+        """Should error if no entities at timestamp."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test")
+
+            # Create entity
+            engine.create_entities([
+                {"name": "Test", "entityType": "concept"},
+            ])
+
+            # Try to restore to time before any events
+            very_old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            result = engine.restore_state_at(very_old.isoformat())
+
+            assert result["status"] == "error"
+            assert "No entities found" in result["error"]
+
+
+class TestCompactEvent:
+    """Tests for compact event handling in materialize."""
+
+    def test_compact_clears_state(self):
+        """Compact event should clear state before subsequent creates."""
+        ts1 = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        ts3 = datetime(2025, 1, 15, 12, 0, 1, tzinfo=timezone.utc)
+
+        events = [
+            # Original entity
+            make_event("ev1", "create_entity", make_entity_data("e1", "Original", ts1), ts1),
+            # Compact event (clears state)
+            make_event("ev2", "compact", {
+                "reason": "test compact",
+                "deleted_entities": ["Original"],
+            }, ts2),
+            # New entity after compact
+            make_event("ev3", "create_entity", make_entity_data("e2", "New", ts3), ts3),
+        ]
+
+        state = materialize(events)
+
+        # Should only have the new entity
+        assert len(state.entities) == 1
+        assert "e2" in state.entities
+        assert "e1" not in state.entities

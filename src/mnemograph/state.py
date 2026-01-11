@@ -205,6 +205,17 @@ def apply_event(state: GraphState, event: MemoryEvent) -> None:
         state._incoming.clear()
         state._connected_entities.clear()
 
+    elif op == "compact":
+        # Compact is a marker event — actual state changes come from
+        # subsequent create_entity/create_relation events.
+        # We just clear current state like clear_graph.
+        state.entities.clear()
+        state.relations.clear()
+        state._name_to_id.clear()
+        state._outgoing.clear()
+        state._incoming.clear()
+        state._connected_entities.clear()
+
     state.last_event_id = event.id
 
 

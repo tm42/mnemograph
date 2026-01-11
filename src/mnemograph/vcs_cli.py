@@ -889,6 +889,339 @@ def clear(ctx, reason, yes, as_json):
         console.print("[dim]   Tip: Use 'mg show --at <timestamp>' to view graph before clear[/dim]")
 
 
+# --- Recovery Commands ---
+
+
+@cli.command()
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def reload(ctx, as_json):
+    """Reload graph state from events.jsonl on disk.
+
+    Use after git operations (checkout, restore) or external edits
+    to events.jsonl to sync the CLI with disk state.
+
+    Examples:
+        git restore .claude/memory/events.jsonl && mg reload
+        mg reload
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    result = engine.reload()
+
+    if as_json:
+        console.print(json.dumps(result, indent=2, default=str))
+    else:
+        console.print(f"[green]✓[/green] Reloaded: {result['entities']} entities, {result['relations']} relations")
+        console.print(f"   Processed {result['events_processed']} events")
+
+
+@cli.command()
+@click.option("--steps", "-n", default=1, type=int, help="Go back N commits (default: 1)")
+@click.option("--to-commit", "-c", help="Restore to specific commit hash")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def rewind(ctx, steps, to_commit, yes, as_json):
+    """Rewind graph to a previous state using git.
+
+    Fast undo — audit trail is in git history only.
+    For audit-preserving restore, use 'mg restore' instead.
+
+    Examples:
+        mg rewind                          # Undo last commit
+        mg rewind --steps 3                # Go back 3 commits
+        mg rewind --to-commit abc123       # Restore to specific commit
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    if not engine._in_git_repo:
+        console.print("[red]Error:[/red] Not in a git repository. Cannot use git-based rewind.")
+        console.print("[dim]Tip: Use 'mg restore --to <timestamp>' for event-based restore.[/dim]")
+        return
+
+    # Confirmation prompt
+    if not yes and not as_json:
+        if to_commit:
+            console.print(f"[yellow]⚠  This will rewind events.jsonl to commit {to_commit}.[/yellow]")
+        else:
+            console.print(f"[yellow]⚠  This will rewind events.jsonl by {steps} commit(s).[/yellow]")
+        console.print("[dim]   Audit trail will only be in git (not in events).[/dim]")
+        console.print()
+        if not click.confirm("Continue?", default=False):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    result = engine.rewind(steps=steps, to_commit=to_commit)
+
+    if as_json:
+        console.print(json.dumps(result, indent=2, default=str))
+    elif result.get("status") == "error":
+        console.print(f"[red]Error:[/red] {result['error']}")
+        if "tip" in result:
+            console.print(f"[dim]Tip: {result['tip']}[/dim]")
+    else:
+        console.print(f"[green]✓[/green] Rewound to commit {result['restored_to_commit']}")
+        console.print(f"   Now at: {result['entities']} entities, {result['relations']} relations")
+        console.print("[dim]   Tip: Run 'git diff' to see what changed[/dim]")
+
+
+@cli.command()
+@click.option("--to", "timestamp", required=True, help="Timestamp to restore to (ISO or relative)")
+@click.option("--reason", "-m", help="Reason for restoring (recorded in events)")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def restore(ctx, timestamp, reason, yes, as_json):
+    """Restore graph to state at a specific timestamp.
+
+    Event-based restore — full audit trail preserved in events.
+    Use 'mg show --at <timestamp>' first to preview the state.
+
+    Examples:
+        mg restore --to "2025-01-10T14:00"
+        mg restore --to "2 hours ago" --reason "Undoing experiment"
+        mg restore --to yesterday
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    # Preview the state
+    try:
+        ts = parse_time_reference(timestamp)
+        preview_state = engine.state_at(ts)
+        preview_entities = len(preview_state.entities)
+        preview_relations = len(preview_state.relations)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        return
+
+    if preview_entities == 0:
+        console.print(f"[red]Error:[/red] No entities found at {timestamp}")
+        console.print("[dim]Tip: Use 'mg show --at <timestamp>' to explore available states.[/dim]")
+        return
+
+    # Confirmation prompt
+    if not yes and not as_json:
+        current_entities = len(engine.state.entities)
+        current_relations = len(engine.state.relations)
+        console.print(f"[yellow]⚠  Restore to {timestamp}[/yellow]")
+        console.print(f"   Current: {current_entities} entities, {current_relations} relations")
+        console.print(f"   After:   {preview_entities} entities, {preview_relations} relations")
+        console.print("[dim]   Events will record: clear + recreate (full audit trail)[/dim]")
+        console.print()
+        if not click.confirm("Continue?", default=False):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    result = engine.restore_state_at(timestamp=timestamp, reason=reason or "")
+
+    if as_json:
+        console.print(json.dumps(result, indent=2, default=str))
+    elif result.get("status") == "error":
+        console.print(f"[red]Error:[/red] {result['error']}")
+        if "tip" in result:
+            console.print(f"[dim]Tip: {result['tip']}[/dim]")
+    else:
+        console.print(f"[green]✓[/green] Restored to {result['restored_to']}")
+        console.print(f"   Now at: {result['entities']} entities, {result['relations']} relations")
+        if reason:
+            console.print(f"   Reason: {reason}")
+        console.print("[dim]   Full audit trail preserved in events[/dim]")
+
+
+@cli.command()
+@click.option("--delete-entity", "-e", multiple=True, help="Entity name(s) to delete completely")
+@click.option("--reason", "-m", help="Reason for compacting (recorded in events)")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def compact(ctx, delete_entity, reason, yes, as_json):
+    """Compact graph: materialize current state, apply deletions, regenerate events.
+
+    This REWRITES the entire event history with a minimal sequence.
+    Pre-compaction state is auto-committed to git (if available).
+
+    Use cases:
+    - Remove all traces of an entity and its relations
+    - Reduce events.jsonl size
+    - Clean up after experiments
+
+    CLI only — not available via MCP (user should be in the loop).
+
+    Examples:
+        mg compact                                # Just compact, no deletions
+        mg compact --delete-entity "test-entity" # Remove specific entity
+        mg compact -e "temp1" -e "temp2"         # Remove multiple entities
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    current_entities = len(engine.state.entities)
+    current_relations = len(engine.state.relations)
+    current_events = len(engine.event_store.read_all())
+
+    if current_entities == 0 and current_relations == 0:
+        if as_json:
+            console.print(json.dumps({"status": "empty", "message": "Graph is already empty"}, indent=2))
+        else:
+            console.print("[yellow]![/yellow] Graph is already empty. Nothing to compact.")
+        return
+
+    # Show what will be deleted
+    deleted_info = []
+    if delete_entity:
+        for name in delete_entity:
+            entity_id = engine._resolve_entity(name)
+            if entity_id:
+                entity = engine.state.entities[entity_id]
+                # Count relations involving this entity
+                rel_count = sum(
+                    1 for r in engine.state.relations
+                    if r.from_entity == entity_id or r.to_entity == entity_id
+                )
+                deleted_info.append(f"  - {entity.name} ({entity.type}) + {rel_count} relations")
+            else:
+                deleted_info.append(f"  - {name} [dim](not found)[/dim]")
+
+    # Confirmation prompt
+    if not yes and not as_json:
+        console.print("[yellow]⚠  This will REWRITE the entire event history.[/yellow]")
+        console.print(f"   Current: {current_entities} entities, {current_relations} relations, {current_events} events")
+
+        if deleted_info:
+            console.print("\n   Will delete:")
+            for info in deleted_info:
+                console.print(info)
+
+        if engine._in_git_repo:
+            console.print("\n[dim]   Pre-compaction state will be auto-committed to git.[/dim]")
+        else:
+            console.print("\n[yellow]   Warning: Not in git repo — no safety backup![/yellow]")
+
+        console.print()
+        if not click.confirm("Continue?", default=False):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    # Auto-commit to git if available
+    import subprocess
+    if engine._in_git_repo and engine._git_root:
+        events_path = engine.event_store.path
+        relative_path = events_path.relative_to(engine._git_root)
+
+        subprocess.run(["git", "add", str(relative_path)], cwd=engine._git_root, capture_output=True)
+        commit_msg = f"Pre-compaction snapshot"
+        if reason:
+            commit_msg += f": {reason}"
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", commit_msg, "--allow-empty"],
+            cwd=engine._git_root,
+            capture_output=True,
+            text=True,
+        )
+        git_committed = commit_result.returncode == 0
+
+    # Perform compaction
+    from .models import MemoryEvent
+    from datetime import datetime, timezone
+
+    # Get current state
+    state = engine.state
+
+    # Apply deletions
+    deleted_entities = []
+    deleted_relation_count = 0
+
+    for name in delete_entity:
+        entity_id = engine._resolve_entity(name)
+        if entity_id and entity_id in state.entities:
+            deleted_entities.append(state.entities[entity_id].name)
+            del state.entities[entity_id]
+            # Remove from name index
+            if name in state._name_to_id:
+                del state._name_to_id[name]
+
+            # Remove relations involving this entity
+            for rel in list(state.relations):
+                if rel.from_entity == entity_id or rel.to_entity == entity_id:
+                    state.relations.remove(rel)
+                    deleted_relation_count += 1
+
+    # Generate minimal event sequence
+    new_events = []
+
+    # Add compact marker event
+    compact_event = MemoryEvent(
+        op="compact",
+        session_id="cli",
+        source="user",
+        data={
+            "reason": reason or "",
+            "deleted_entities": deleted_entities,
+            "deleted_relation_count": deleted_relation_count,
+            "original_event_count": current_events,
+        },
+    )
+    new_events.append(compact_event)
+
+    # Add create_entity events for remaining entities
+    for entity in state.entities.values():
+        event = MemoryEvent(
+            op="create_entity",
+            session_id="compact",
+            source="user",
+            data=entity.model_dump(mode="json"),
+        )
+        # Preserve original timestamp
+        event.ts = entity.created_at
+        new_events.append(event)
+
+    # Add create_relation events for remaining relations
+    for relation in state.relations:
+        event = MemoryEvent(
+            op="create_relation",
+            session_id="compact",
+            source="user",
+            data=relation.model_dump(mode="json"),
+        )
+        # Preserve original timestamp
+        event.ts = relation.created_at
+        new_events.append(event)
+
+    # Write new events (overwrite file)
+    engine.event_store.path.write_text("")  # Clear file
+    for event in new_events:
+        engine.event_store.append(event)
+
+    # Reload
+    engine.reload()
+
+    result = {
+        "status": "compacted",
+        "deleted_entities": deleted_entities,
+        "deleted_relation_count": deleted_relation_count,
+        "entities_before": current_entities,
+        "entities_after": len(engine.state.entities),
+        "relations_before": current_relations,
+        "relations_after": len(engine.state.relations),
+        "events_before": current_events,
+        "events_after": len(new_events),
+    }
+
+    if as_json:
+        console.print(json.dumps(result, indent=2, default=str))
+    else:
+        console.print(f"[green]✓[/green] Compacted: {result['events_before']} → {result['events_after']} events")
+        console.print(f"   Entities: {result['entities_after']}, Relations: {result['relations_after']}")
+        if deleted_entities:
+            console.print(f"   Deleted: {', '.join(deleted_entities)}")
+        if engine._in_git_repo:
+            console.print("[dim]   Pre-compaction state saved in git[/dim]")
+
+
 # --- Visualization Commands ---
 
 
