@@ -42,7 +42,13 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="create_entities",
-            description="Create new entities in the knowledge graph",
+            description=(
+                "Create new entities in the knowledge graph. "
+                "AUTO-CHECKS for duplicates — returns warning if similar entity exists (use find_similar first if unsure). "
+                "ALWAYS connect new entities with create_relations after. "
+                "Types: concept, decision, project, pattern, question, learning. "
+                "Naming: use canonical names ('Python' not 'python language'), prefix decisions ('Decision: Use Redis')."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -51,19 +57,22 @@ async def list_tools() -> list[Tool]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string", "description": "Entity name"},
+                                "name": {
+                                    "type": "string",
+                                    "description": "Canonical entity name (e.g., 'Python', 'Decision: Use Redis')",
+                                },
                                 "entityType": {
                                     "type": "string",
                                     "enum": [
                                         "concept", "decision", "project",
                                         "pattern", "question", "learning", "entity"
                                     ],
-                                    "description": "Type of entity",
+                                    "description": "concept=ideas/tech, decision=choices, project=repos, pattern=solutions, question=unknowns, learning=discoveries",
                                 },
                                 "observations": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "Initial observations about this entity",
+                                    "description": "Atomic facts (one fact per string). Use prefixes: 'Gotcha: ...', 'Warning: ...', 'Status: ...'",
                                 },
                             },
                             "required": ["name", "entityType"],
@@ -75,7 +84,11 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="create_relations",
-            description="Create relations between entities. Use active voice for relation types.",
+            description=(
+                "Create relations (edges) between entities. Every entity should have at least one relation. "
+                "Use specific types: uses, implements, part_of, depends_on, alternative_to, decided_by, affects. "
+                "Avoid generic 'related_to' when a specific type fits."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -88,7 +101,7 @@ async def list_tools() -> list[Tool]:
                                 "to": {"type": "string", "description": "Target entity name"},
                                 "relationType": {
                                     "type": "string",
-                                    "description": "Relation type (active voice, e.g., 'implements', 'uses')",
+                                    "description": "Relation type: uses, implements, part_of, depends_on, enables, alternative_to, decided_by, affects, replaced_by, learned_from",
                                 },
                             },
                             "required": ["from", "to", "relationType"],
@@ -100,7 +113,11 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="add_observations",
-            description="Add observations to existing entities",
+            description=(
+                "Add atomic facts to existing entities. One fact per observation — don't dump paragraphs. "
+                "Use prefixes: 'Gotcha: ...', 'Warning: ...', 'Status: ...', 'Source: ...'. "
+                "For relations, use create_relations instead of 'X is related to Y' observations."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -109,11 +126,11 @@ async def list_tools() -> list[Tool]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "entityName": {"type": "string"},
+                                "entityName": {"type": "string", "description": "Entity to add facts to"},
                                 "contents": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "Observations to add",
+                                    "description": "Atomic facts. Good: '88 keys in standard piano'. Bad: multi-sentence paragraphs.",
                                 },
                             },
                             "required": ["entityName", "contents"],
@@ -192,11 +209,14 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="search_nodes",
-            description="Search entities by text query (matches name, type, observations)",
+            description=(
+                "Search entities by text. ALWAYS SEARCH BEFORE CREATING to avoid duplicates. "
+                "Try canonical names first, then variants ('PostgreSQL', 'Postgres', 'psql')."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query"}
+                    "query": {"type": "string", "description": "Search text (try canonical name, then variants)"}
                 },
                 "required": ["query"],
             },
@@ -238,24 +258,27 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="memory_context",
-            description="Get memory context at varying depth levels for efficient retrieval",
+            description=(
+                "Get relevant context for a query. Use at session start or before decisions. "
+                "shallow=quick summary, medium=semantic search+neighbors (default), deep=full exploration."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "depth": {
                         "type": "string",
                         "enum": ["shallow", "medium", "deep"],
-                        "default": "shallow",
-                        "description": "shallow=summary (~500 tokens), medium=search+neighbors (~2000), deep=multi-hop (~5000)",
+                        "default": "medium",
+                        "description": "shallow=summary (~500 tokens), medium=search+1-hop (~2000), deep=2-hop traverse (~5000)",
                     },
                     "query": {
                         "type": "string",
-                        "description": "Search query for medium depth (uses semantic search)",
+                        "description": "What you're looking for (used for medium/deep semantic search)",
                     },
                     "focus": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Entity names to focus on",
+                        "description": "Entity names to start traversal from",
                     },
                     "max_tokens": {
                         "type": "integer",
@@ -385,6 +408,128 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        # --- Universal Agent Tools ---
+        Tool(
+            name="get_primer",
+            description="Get oriented with this knowledge graph. Call at session start.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="session_start",
+            description="Signal session start and get initial context",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_hint": {
+                        "type": "string",
+                        "description": "Optional project name or path for context",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="session_end",
+            description="Signal session end, optionally save summary",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional session summary to store as observation",
+                    },
+                },
+            },
+        ),
+        # --- Graph Coherence Tools ---
+        Tool(
+            name="find_similar",
+            description=(
+                "Find entities with similar names (potential duplicates). "
+                "Use before creating to check for existing entities. "
+                "Returns similarity scores — consider merging if >0.85."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Entity name to check for similar existing entities",
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "default": 0.7,
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": "Similarity threshold 0-1 (default 0.7)",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="find_orphans",
+            description=(
+                "Find entities with no relations (likely incomplete). "
+                "Orphans should be connected, merged into another entity, or deleted."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="merge_entities",
+            description=(
+                "Merge source entity into target. Source's observations and relations move to target, then source is deleted. "
+                "Use to consolidate duplicates (e.g., merge 'ReactJS' into 'React')."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Entity to merge FROM (will be deleted)",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Entity to merge INTO (will gain observations/relations)",
+                    },
+                    "delete_source": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Whether to delete source after merge (default true)",
+                    },
+                },
+                "required": ["source", "target"],
+            },
+        ),
+        Tool(
+            name="get_graph_health",
+            description=(
+                "Assess knowledge graph quality. Returns: orphan count, potential duplicates, overloaded entities, weak relations. "
+                "Run periodically to maintain graph hygiene."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="suggest_relations",
+            description=(
+                "Suggest potential relations for an entity based on semantic similarity and co-occurrence. "
+                "Useful for connecting newly created entities or discovering missing links."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "Entity name to get relation suggestions for",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 5,
+                        "description": "Max suggestions to return",
+                    },
+                },
+                "required": ["entity"],
+            },
+        ),
     ]
 
 
@@ -501,6 +646,50 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = engine.get_weak_relations(
                 max_weight=arguments.get("max_weight", 0.1),
                 limit=arguments.get("limit", 20),
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        # --- Universal Agent Tools ---
+        elif name == "get_primer":
+            result = engine.get_primer()
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "session_start":
+            result = engine.session_start(project_hint=arguments.get("project_hint"))
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "session_end":
+            result = engine.session_end(summary=arguments.get("summary"))
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        # --- Graph Coherence Tools ---
+        elif name == "find_similar":
+            result = engine.find_similar(
+                name=arguments["name"],
+                threshold=arguments.get("threshold", 0.7),
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "find_orphans":
+            result = engine.find_orphans()
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "merge_entities":
+            result = engine.merge_entities(
+                source=arguments["source"],
+                target=arguments["target"],
+                delete_source=arguments.get("delete_source", True),
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_graph_health":
+            result = engine.get_graph_health()
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "suggest_relations":
+            result = engine.suggest_relations(
+                entity=arguments["entity"],
+                limit=arguments.get("limit", 5),
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 

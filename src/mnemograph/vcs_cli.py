@@ -50,7 +50,7 @@ def get_memory_dir() -> Path:
 )
 @click.pass_context
 def cli(ctx, memory_path, use_global):
-    """Claude Memory - Git-based knowledge graph version control."""
+    """Mnemograph - Git-based knowledge graph version control."""
     ctx.ensure_object(dict)
     if use_global:
         ctx.obj["memory_dir"] = Path.home() / ".claude" / "memory"
@@ -526,6 +526,315 @@ def connections(ctx, entity_name, limit, as_json):
             )
 
         console.print(table)
+
+
+# --- Graph Coherence Commands ---
+
+
+@cli.command()
+@click.option("--fix", is_flag=True, help="Interactive cleanup mode")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def health(ctx, fix, as_json):
+    """Show graph health report.
+
+    Detects issues like orphan entities, potential duplicates,
+    overloaded entities, and weak relations.
+
+    Examples:
+        mg health              # Show health report
+        mg health --fix        # Interactive cleanup mode
+        mg health --json       # Output as JSON
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    report = engine.get_graph_health()
+
+    if as_json:
+        console.print(json.dumps(report, indent=2, default=str))
+        return
+
+    summary = report["summary"]
+
+    console.print("[bold]Graph Health Report[/bold]")
+    console.print("═" * 40)
+    console.print(f"Entities: {summary['total_entities']}    Relations: {summary['total_relations']}")
+    console.print()
+
+    # Issues summary
+    issues_found = (
+        summary["orphan_count"]
+        + summary["duplicate_groups"]
+        + summary["overloaded_count"]
+        + summary["weak_relation_count"]
+    )
+
+    if issues_found:
+        console.print("[yellow]Issues Found:[/yellow]")
+        if summary["orphan_count"]:
+            console.print(f"  ⚠ {summary['orphan_count']} orphan entities (no relations)")
+        if summary["duplicate_groups"]:
+            console.print(f"  ⚠ {summary['duplicate_groups']} potential duplicate groups")
+        if summary["overloaded_count"]:
+            console.print(f"  ⚠ {summary['overloaded_count']} overloaded entities (>15 observations)")
+        if summary["weak_relation_count"]:
+            console.print(f"  ⚠ {summary['weak_relation_count']} weak relations (may be noise)")
+        if summary["cluster_count"] > 1:
+            console.print(f"  ⚠ {summary['cluster_count']} disconnected clusters")
+        console.print()
+    else:
+        console.print("[green]✓ No issues found[/green]")
+        console.print()
+
+    # Recommendations
+    console.print("[bold]Recommendations:[/bold]")
+    for rec in report["recommendations"]:
+        console.print(f"  • {rec}")
+
+    if fix and issues_found:
+        console.print()
+        console.print("[cyan]Interactive cleanup mode...[/cyan]")
+        _interactive_cleanup(engine, report)
+    elif fix and not issues_found:
+        console.print()
+        console.print("[green]Nothing to fix![/green]")
+
+
+def _interactive_cleanup(engine: MemoryEngine, report: dict):
+    """Interactive mode for fixing graph issues."""
+    issues = report["issues"]
+
+    # Handle orphans
+    if issues["orphans"]:
+        console.print()
+        console.print(f"[bold]Found {len(issues['orphans'])} orphan entities:[/bold]")
+
+        for orphan in issues["orphans"][:10]:  # Limit to 10
+            console.print()
+            console.print(f"  [cyan]{orphan['name']}[/cyan] ({orphan['type']})")
+            console.print(f"  {orphan['observation_count']} observations, created {orphan['created_at'][:10]}")
+
+            choice = click.prompt(
+                "  [c]onnect  [d]elete  [s]kip",
+                type=click.Choice(["c", "d", "s"], case_sensitive=False),
+                default="s",
+            )
+
+            if choice == "c":
+                # Get suggestions
+                suggestions = engine.suggest_relations(orphan["name"], limit=3)
+                if suggestions and "error" not in suggestions[0]:
+                    console.print("  Suggested connections:")
+                    for i, s in enumerate(suggestions, 1):
+                        console.print(f"    {i}. {s['target']} ({s['suggested_relation']}, {s['confidence']:.0%})")
+
+                    target = click.prompt("  Connect to", default=suggestions[0]["target"] if suggestions else "")
+                    rel_type = click.prompt("  Relation type", default=suggestions[0]["suggested_relation"] if suggestions else "related_to")
+
+                    if target:
+                        engine.create_relations([{
+                            "from": orphan["name"],
+                            "to": target,
+                            "relationType": rel_type,
+                        }])
+                        console.print(f"  [green]✓[/green] Created relation: {orphan['name']} → {target}")
+                else:
+                    target = click.prompt("  Connect to (entity name)")
+                    rel_type = click.prompt("  Relation type", default="related_to")
+                    if target:
+                        engine.create_relations([{
+                            "from": orphan["name"],
+                            "to": target,
+                            "relationType": rel_type,
+                        }])
+                        console.print(f"  [green]✓[/green] Created relation")
+
+            elif choice == "d":
+                if click.confirm(f"  Delete '{orphan['name']}'?", default=False):
+                    engine.delete_entities([orphan["name"]])
+                    console.print(f"  [green]✓[/green] Deleted {orphan['name']}")
+
+    # Handle duplicates
+    if issues["potential_duplicates"]:
+        console.print()
+        console.print(f"[bold]Found {len(issues['potential_duplicates'])} potential duplicate groups:[/bold]")
+
+        for group in issues["potential_duplicates"][:5]:  # Limit to 5
+            console.print()
+            console.print(f"  [cyan]{group['entity']}[/cyan] similar to: {', '.join(group['similar_to'])}")
+
+            choice = click.prompt(
+                "  [m]erge  [s]kip",
+                type=click.Choice(["m", "s"], case_sensitive=False),
+                default="s",
+            )
+
+            if choice == "m":
+                target = click.prompt("  Merge into", default=group["entity"])
+                source = click.prompt("  Merge from", default=group["similar_to"][0] if group["similar_to"] else "")
+
+                if source and target and source != target:
+                    result = engine.merge_entities(source, target)
+                    if "error" in result:
+                        console.print(f"  [red]✗[/red] {result['error']}")
+                    else:
+                        console.print(f"  [green]✓[/green] Merged {source} → {target}")
+
+    console.print()
+    console.print("[green]Cleanup complete.[/green]")
+
+
+@cli.command()
+@click.argument("name")
+@click.option("-t", "--threshold", type=float, default=0.7, help="Similarity threshold 0-1")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def similar(ctx, name, threshold, as_json):
+    """Find entities similar to a given name.
+
+    Use before creating new entities to check for duplicates.
+
+    Examples:
+        mg similar "React"
+        mg similar "PostgreSQL" -t 0.8
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    results = engine.find_similar(name, threshold=threshold)
+
+    if as_json:
+        console.print(json.dumps(results, indent=2, default=str))
+        return
+
+    if not results:
+        console.print(f"[green]✓[/green] No similar entities found for '{name}'")
+        console.print("[dim]   Safe to create a new entity with this name.[/dim]")
+        return
+
+    console.print(f"[bold]Entities similar to '{name}':[/bold]")
+    console.print()
+
+    table = Table()
+    table.add_column("Name", style="cyan")
+    table.add_column("Type")
+    table.add_column("Similarity", justify="right", style="green")
+    table.add_column("Observations", justify="right")
+
+    for r in results:
+        sim_display = f"{r['similarity']:.0%}"
+        if r["similarity"] >= 0.85:
+            sim_display = f"[red]{sim_display}[/red] ← consider merging"
+        table.add_row(
+            r["name"],
+            r["type"],
+            sim_display,
+            str(r["observation_count"]),
+        )
+
+    console.print(table)
+
+
+@cli.command()
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def orphans(ctx, as_json):
+    """Find entities with no relations.
+
+    Orphan entities are often incomplete — they should be connected,
+    merged into another entity, or deleted.
+
+    Examples:
+        mg orphans
+        mg orphans --json
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    results = engine.find_orphans()
+
+    if as_json:
+        console.print(json.dumps(results, indent=2, default=str))
+        return
+
+    if not results:
+        console.print("[green]✓[/green] No orphan entities found")
+        console.print("[dim]   All entities are connected.[/dim]")
+        return
+
+    console.print(f"[bold]Orphan entities ({len(results)} found):[/bold]")
+    console.print()
+
+    table = Table()
+    table.add_column("Name", style="cyan")
+    table.add_column("Type")
+    table.add_column("Observations", justify="right")
+    table.add_column("Created", style="dim")
+
+    for r in results:
+        table.add_row(
+            r["name"],
+            r["type"],
+            str(r["observation_count"]),
+            r["created_at"][:10],
+        )
+
+    console.print(table)
+    console.print()
+    console.print("[dim]Run 'mg health --fix' for interactive cleanup.[/dim]")
+
+
+@cli.command()
+@click.argument("entity")
+@click.option("-n", "--limit", type=int, default=5, help="Max suggestions")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def suggest(ctx, entity, limit, as_json):
+    """Suggest potential relations for an entity.
+
+    Based on semantic similarity and co-occurrence in observations.
+
+    Examples:
+        mg suggest "FastAPI"
+        mg suggest "FastAPI" -n 10
+    """
+    memory_dir = ctx.obj["memory_dir"]
+    engine = MemoryEngine(memory_dir, session_id="cli")
+
+    results = engine.suggest_relations(entity, limit=limit)
+
+    if as_json:
+        console.print(json.dumps(results, indent=2, default=str))
+        return
+
+    # Check for error
+    if results and "error" in results[0]:
+        console.print(f"[red]✗[/red] {results[0]['error']}")
+        return
+
+    if not results:
+        console.print(f"[yellow]![/yellow] No relation suggestions for '{entity}'")
+        return
+
+    console.print(f"[bold]Suggested relations for '{entity}':[/bold]")
+    console.print()
+
+    table = Table()
+    table.add_column("Target", style="cyan")
+    table.add_column("Relation Type")
+    table.add_column("Confidence", justify="right", style="green")
+    table.add_column("Reason", style="dim")
+
+    for r in results:
+        table.add_row(
+            r["target"],
+            r["suggested_relation"],
+            f"{r['confidence']:.0%}",
+            r.get("reason", ""),
+        )
+
+    console.print(table)
 
 
 # --- Visualization Commands ---

@@ -1,7 +1,7 @@
 [project]
 name = "mnemograph"
 version = "0.1.3"
-description = "Event-sourced knowledge graph memory system for Claude Code"
+description = "Event-sourced knowledge graph memory for AI coding agents (MCP server)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -19,7 +19,8 @@ dependencies = [
 [project.scripts]
 mnemograph = "mnemograph.server:main"
 mnemograph-cli = "mnemograph.cli:main"
-claude-mem = "mnemograph.vcs_cli:cli"
+mg = "mnemograph.vcs_cli:cli"        # Short universal alias
+claude-mem = "mnemograph.vcs_cli:cli" # Backward compat for CC users
 
 [project.urls]
 Homepage = "https://github.com/tm42/mnemograph"

@@ -2,11 +2,13 @@
 
 <!-- mcp-name: io.github.tm42/mnemograph -->
 
-A persistent, event-sourced knowledge graph for Claude Code. Unlike simple key-value memory, Mnemograph captures **entities**, **relations**, and **observations** — enabling semantic search, tiered context retrieval, and git-based version control of your AI's memory.
+A persistent, event-sourced knowledge graph for AI coding agents. Unlike simple key-value memory, Mnemograph captures **entities**, **relations**, and **observations** — enabling semantic search, tiered context retrieval, and git-based version control of your AI's memory.
+
+**Works with**: Claude Code, opencode, codex CLI, Zed, Continue.dev, and any MCP-compatible agent.
 
 ## Why Mnemograph?
 
-Claude Code sessions are ephemeral. Mnemograph gives your AI partner persistent memory that:
+AI coding sessions are ephemeral. Mnemograph gives your AI partner persistent memory that:
 
 - **Survives across sessions** — decisions, patterns, learnings persist
 - **Supports semantic search** — find relevant context by meaning, not just keywords
@@ -45,14 +47,25 @@ claude mcp add --scope user mnemograph \
 mkdir -p ~/.claude/memory
 ```
 
-### Option 3: Install from source
+### Option 3: Other MCP Clients
+
+Each MCP client has a different configuration format. See [UNIVERSAL_MCP_COMPATIBILITY.md](UNIVERSAL_MCP_COMPATIBILITY.md) for copy-paste configs for:
+
+- **opencode** — `~/.config/opencode/opencode.json`
+- **Codex CLI** — `~/.codex/config.yaml`
+- **Zed** — `~/.config/zed/settings.json`
+- **Continue.dev** — `~/.continue/config.json`
+
+The key environment variable is `MEMORY_PATH` — set it to where you want the knowledge graph stored.
+
+### Option 4: Install from source
 
 ```bash
 git clone https://github.com/tm42/mnemograph.git
 cd mnemograph
 uv sync
 
-# Add to Claude Code
+# Add to Claude Code (or adapt for your MCP client)
 claude mcp add --scope user mnemograph \
   -e MEMORY_PATH="$HOME/.claude/memory" \
   -- uv run --directory /path/to/mnemograph mnemograph
@@ -60,9 +73,9 @@ claude mcp add --scope user mnemograph \
 
 ## Usage
 
-### MCP Tools (used by Claude)
+### MCP Tools (used by any agent)
 
-Mnemograph exposes these tools to Claude Code:
+Mnemograph exposes these tools via MCP:
 
 | Tool | Description |
 |------|-------------|
@@ -84,6 +97,11 @@ Mnemograph exposes these tools to Claude Code:
 | `set_relation_importance` | Set explicit importance weight (0.0-1.0) |
 | `get_strongest_connections` | Find entity's most important connections |
 | `get_weak_relations` | Find pruning candidates (low-weight relations) |
+| `find_similar` | Find entities with similar names (duplicate detection) |
+| `find_orphans` | Find entities with no relations |
+| `merge_entities` | Merge duplicate entities (consolidates observations, redirects relations) |
+| `get_graph_health` | Assess graph quality: orphans, duplicates, overloaded entities |
+| `suggest_relations` | Suggest potential relations based on semantic similarity |
 
 ### CLI Tools
 
@@ -98,17 +116,27 @@ mnemograph-cli revert --session X  # Undo entire session
 mnemograph-cli export              # Export graph as JSON
 ```
 
-**`claude-mem`** — Git-based version control:
+**`mg`** (or `claude-mem`) — Git-based version control:
 
 ```bash
-claude-mem init                  # Initialize memory as git repo
-claude-mem status                # Show uncommitted changes
-claude-mem commit -m "message"   # Commit current state
-claude-mem log                   # View commit history
-claude-mem graph                 # Open interactive graph viewer
-claude-mem graph --watch         # Live reload mode (refresh button)
-claude-mem --global graph        # Use global memory (~/.claude/memory)
+mg init                  # Initialize memory as git repo
+mg status                # Show uncommitted changes
+mg commit -m "message"   # Commit current state
+mg log                   # View commit history
+mg graph                 # Open interactive graph viewer
+mg graph --watch         # Live reload mode (refresh button)
+mg --global graph        # Use global memory (~/.mnemograph/memory)
+mg --memory-path ~/.opencode/memory graph  # Custom memory location
+
+# Graph health and maintenance
+mg health                # Show graph health report (orphans, duplicates, etc.)
+mg health --fix          # Interactive cleanup mode
+mg similar "React"       # Find entities similar to "React" (duplicate check)
+mg orphans               # List entities with no relations
+mg suggest "FastAPI"     # Suggest relations for an entity
 ```
+
+**Note**: Global options (`--global`, `--memory-path`) come *before* the subcommand.
 
 **Graph Visualization** — Interactive D3.js viewer:
 
@@ -120,11 +148,11 @@ claude-mem --global graph        # Use global memory (~/.claude/memory)
 ## Architecture
 
 ```
-~/.claude/memory/
-├── events.jsonl    # Append-only event log (source of truth)
-├── state.json      # Cached materialized state (derived)
-├── vectors.db      # Semantic search index (derived)
-└── .git/           # Version history
+~/.mnemograph/memory/    # or ~/.claude/memory, ~/.opencode/memory, etc.
+├── events.jsonl         # Append-only event log (source of truth)
+├── state.json           # Cached materialized state (derived)
+├── vectors.db           # Semantic search index (derived)
+└── .git/                # Version history
 ```
 
 **Event sourcing** means all changes are recorded as immutable events. The current state is computed by replaying events. This enables:

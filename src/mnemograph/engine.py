@@ -772,3 +772,577 @@ class MemoryEngine:
             })
 
         return result
+
+    # --- Universal Agent Tools ---
+
+    def get_primer(self) -> dict:
+        """Get oriented with this knowledge graph.
+
+        Returns summary of what's available and how to use the tools.
+        Call at session start to understand the knowledge graph context.
+        """
+        # Get type counts
+        type_counts = {}
+        for entity in self.state.entities.values():
+            type_counts[entity.type] = type_counts.get(entity.type, 0) + 1
+
+        # Get recent entities
+        recent = self.get_recent_entities(limit=5)
+        recent_summary = [
+            {"name": e.name, "type": e.type}
+            for e in recent
+        ]
+
+        return {
+            "status": {
+                "entity_count": len(self.state.entities),
+                "relation_count": len(self.state.relations),
+                "types": type_counts,
+            },
+            "recent_activity": recent_summary,
+            "tools": {
+                "retrieval": [
+                    "memory_context(depth, query) - Get relevant context (shallow/medium/deep)",
+                    "search_nodes(query) - Text search across entities",
+                    "search_semantic(query) - Meaning-based search with embeddings",
+                    "open_nodes(names) - Get specific entities with relations",
+                ],
+                "creation": [
+                    "create_entities(entities) - Create new knowledge nodes",
+                    "add_observations(observations) - Add info to existing entities",
+                    "create_relations(relations) - Link entities together",
+                ],
+                "history": [
+                    "get_state_at(timestamp) - View graph at any point in time",
+                    "diff_timerange(start, end) - See what changed",
+                    "get_entity_history(name) - Full changelog for an entity",
+                ],
+            },
+            "quick_start": "Call memory_context(depth='shallow') for a summary, or search_semantic(query='...') to find relevant knowledge.",
+        }
+
+    def session_start(self, project_hint: str | None = None) -> dict:
+        """Signal session start and get initial context.
+
+        Args:
+            project_hint: Optional project name or path for context
+
+        Returns:
+            Initial context to prime the session
+        """
+        # Get shallow context for session priming
+        context_result = self.memory_context(depth="shallow")
+
+        # Find project entity if hint provided
+        project_entity = None
+        if project_hint:
+            project_id = self._resolve_entity(project_hint)
+            if project_id:
+                project_entity = self.state.entities.get(project_id)
+
+        return {
+            "session_id": self.session_id,
+            "memory_summary": {
+                "entity_count": len(self.state.entities),
+                "relation_count": len(self.state.relations),
+            },
+            "context": context_result["content"],
+            "project": project_entity.name if project_entity else None,
+            "tip": "Use memory_context(depth='medium', query='...') for specific topics.",
+        }
+
+    def session_end(self, summary: str | None = None) -> dict:
+        """Signal session end, optionally save summary.
+
+        Args:
+            summary: Optional session summary to store as observation
+
+        Returns:
+            Session end acknowledgement
+        """
+        stored_summary = False
+
+        if summary:
+            # Try to find a project entity to attach the summary to
+            project_entities = self.get_entities_by_type("project")
+
+            if project_entities:
+                # Attach to most recently accessed project
+                project_entities.sort(key=lambda e: e.last_accessed or e.created_at, reverse=True)
+                project = project_entities[0]
+
+                # Add observation with session summary
+                obs = Observation(
+                    text=f"[Session {self.session_id}] {summary}",
+                    source=self.session_id,
+                )
+                self._emit(
+                    "add_observation",
+                    {"entity_id": project.id, "observation": obs.model_dump(mode="json")},
+                )
+                stored_summary = True
+            else:
+                # Create a learning entity for the summary
+                learning = Entity(
+                    name=f"Session Summary ({self.session_id[:8]})",
+                    type="learning",
+                    observations=[Observation(text=summary, source=self.session_id)],
+                    created_by=self.session_id,
+                )
+                self._emit("create_entity", learning.model_dump(mode="json"))
+                stored_summary = True
+
+        # Save co-access cache
+        self.save_co_access_cache()
+
+        return {
+            "status": "session_ended",
+            "summary_stored": stored_summary,
+            "tip": "Key learnings can be stored with create_entities or add_observations anytime.",
+        }
+
+    # --- Graph Coherence Tools ---
+
+    def find_similar(self, name: str, threshold: float = 0.7) -> list[dict]:
+        """Find entities with similar names (potential duplicates).
+
+        Uses combination of:
+        - Substring containment (React in ReactJS)
+        - Jaccard similarity on tokens
+        - Prefix/suffix matching
+        - Semantic similarity from embeddings
+
+        Args:
+            name: Entity name to check
+            threshold: Similarity threshold 0-1 (default 0.7)
+
+        Returns:
+            List of similar entities with similarity scores, sorted by score
+        """
+        results = []
+        name_lower = name.lower().strip()
+        name_tokens = set(name_lower.split())
+
+        for eid, entity in self.state.entities.items():
+            entity_lower = entity.name.lower()
+
+            # Skip exact matches
+            if entity_lower == name_lower:
+                continue
+
+            entity_tokens = set(entity_lower.split())
+
+            # 1. Substring containment (strong signal for "React" in "ReactJS")
+            substring_score = 0.0
+            if name_lower in entity_lower or entity_lower in name_lower:
+                # Longer substring relative to total length = higher score
+                shorter = min(len(name_lower), len(entity_lower))
+                longer = max(len(name_lower), len(entity_lower))
+                substring_score = shorter / longer  # e.g., "React"(5) in "ReactJS"(7) = 0.71
+
+            # 2. Jaccard similarity on tokens (for multi-word names)
+            intersection = len(name_tokens & entity_tokens)
+            union = len(name_tokens | entity_tokens)
+            jaccard = intersection / union if union > 0 else 0
+
+            # 3. Prefix/suffix matching bonus
+            prefix_match = name_lower.startswith(entity_lower) or entity_lower.startswith(name_lower)
+            suffix_match = name_lower.endswith(entity_lower) or entity_lower.endswith(name_lower)
+            affix_bonus = 0.2 if (prefix_match or suffix_match) else 0
+
+            # 4. Embedding similarity (if vector index available)
+            embedding_sim = 0.0
+            if self._vector_index is not None:
+                try:
+                    search_results = self.vector_index.search(name, limit=20)
+                    for result_id, score in search_results:
+                        if result_id == eid:
+                            embedding_sim = score
+                            break
+                except Exception:
+                    pass
+
+            # Combined score - use max of different approaches
+            # This handles different cases well:
+            # - "React" vs "ReactJS": substring_score dominates
+            # - "React Native" vs "React": jaccard + affix
+            # - Completely different names: embedding_sim dominates
+            similarity = max(
+                substring_score * 0.9 + affix_bonus,  # Substring-based
+                jaccard * 0.8 + affix_bonus,  # Token-based
+                embedding_sim * 0.8,  # Semantic-based
+            )
+
+            if similarity >= threshold:
+                results.append({
+                    "id": eid,
+                    "name": entity.name,
+                    "type": entity.type,
+                    "similarity": round(similarity, 2),
+                    "observation_count": len(entity.observations),
+                })
+
+        return sorted(results, key=lambda x: x["similarity"], reverse=True)
+
+    def find_orphans(self) -> list[dict]:
+        """Find entities with no relations (likely incomplete).
+
+        Returns:
+            List of orphan entities with metadata
+        """
+        # Find entities that have relations
+        connected = set()
+        for rel in self.state.relations:
+            connected.add(rel.from_entity)
+            connected.add(rel.to_entity)
+
+        # Find orphans
+        orphans = []
+        for eid, entity in self.state.entities.items():
+            if eid not in connected:
+                orphans.append({
+                    "id": eid,
+                    "name": entity.name,
+                    "type": entity.type,
+                    "observation_count": len(entity.observations),
+                    "created_at": entity.created_at.isoformat(),
+                    "last_accessed": entity.last_accessed.isoformat() if entity.last_accessed else None,
+                })
+
+        # Sort by creation date (oldest first - most likely to be stale)
+        return sorted(orphans, key=lambda x: x["created_at"])
+
+    def merge_entities(self, source: str, target: str, delete_source: bool = True) -> dict:
+        """Merge source entity into target.
+
+        - Source's observations are appended to target (with merge note)
+        - Source's relations are redirected to target
+        - Source is deleted (unless delete_source=False)
+
+        Args:
+            source: Entity name/ID to merge FROM
+            target: Entity name/ID to merge INTO
+            delete_source: Whether to delete source after (default True)
+
+        Returns:
+            Result with merged entity details
+        """
+        source_id = self._resolve_entity(source)
+        target_id = self._resolve_entity(target)
+
+        if not source_id:
+            return {"error": f"Source entity not found: {source}"}
+        if not target_id:
+            return {"error": f"Target entity not found: {target}"}
+        if source_id == target_id:
+            return {"error": "Source and target are the same entity"}
+
+        source_entity = self.state.entities[source_id]
+        target_entity = self.state.entities[target_id]
+
+        # 1. Copy observations with merge prefix
+        observations_merged = 0
+        for obs in source_entity.observations:
+            merged_text = f"[Merged from {source_entity.name}] {obs.text}"
+            new_obs = Observation(text=merged_text, source=self.session_id)
+            self._emit(
+                "add_observation",
+                {"entity_id": target_id, "observation": new_obs.model_dump(mode="json")},
+            )
+            observations_merged += 1
+
+        # 2. Redirect relations
+        relations_redirected = 0
+        relations_to_delete = []
+
+        for rel in self.state.relations:
+            if rel.from_entity == source_id:
+                # Don't create self-referencing relation
+                if rel.to_entity != target_id:
+                    # Create new relation from target
+                    new_rel = Relation(
+                        from_entity=target_id,
+                        to_entity=rel.to_entity,
+                        type=rel.type,
+                        created_by=self.session_id,
+                    )
+                    self._emit("create_relation", new_rel.model_dump(mode="json"))
+                    relations_redirected += 1
+                relations_to_delete.append(rel)
+
+            elif rel.to_entity == source_id:
+                # Don't create self-referencing relation
+                if rel.from_entity != target_id:
+                    # Create new relation to target
+                    new_rel = Relation(
+                        from_entity=rel.from_entity,
+                        to_entity=target_id,
+                        type=rel.type,
+                        created_by=self.session_id,
+                    )
+                    self._emit("create_relation", new_rel.model_dump(mode="json"))
+                    relations_redirected += 1
+                relations_to_delete.append(rel)
+
+        # Delete old relations
+        for rel in relations_to_delete:
+            self._emit(
+                "delete_relation",
+                {
+                    "from_entity": rel.from_entity,
+                    "to_entity": rel.to_entity,
+                    "type": rel.type,
+                },
+            )
+
+        # 3. Delete source entity
+        if delete_source:
+            self._emit("delete_entity", {"id": source_id})
+
+        return {
+            "status": "merged",
+            "source": source_entity.name,
+            "target": target_entity.name,
+            "observations_merged": observations_merged,
+            "relations_redirected": relations_redirected,
+            "source_deleted": delete_source,
+        }
+
+    def get_graph_health(self) -> dict:
+        """Assess overall health of the knowledge graph.
+
+        Returns:
+            Health report with issues and recommendations
+        """
+        # Find orphans
+        orphans = self.find_orphans()
+
+        # Find potential duplicates (group similar entities)
+        duplicates = []
+        seen_ids = set()
+
+        for eid, entity in self.state.entities.items():
+            if eid in seen_ids:
+                continue
+
+            similar = self.find_similar(entity.name, threshold=0.8)
+            if similar:
+                group = {
+                    "entity": entity.name,
+                    "similar_to": [s["name"] for s in similar],
+                }
+                duplicates.append(group)
+                seen_ids.add(eid)
+                seen_ids.update(s["id"] for s in similar)
+
+        # Find overloaded entities (>15 observations)
+        overloaded = [
+            {"name": e.name, "observation_count": len(e.observations), "type": e.type}
+            for e in self.state.entities.values()
+            if len(e.observations) > 15
+        ]
+
+        # Find weak relations (low weight)
+        weak_relations = []
+        for rel in self.state.relations:
+            if rel.weight < 0.2:
+                from_entity = self.state.entities.get(rel.from_entity)
+                to_entity = self.state.entities.get(rel.to_entity)
+                weak_relations.append({
+                    "from": from_entity.name if from_entity else rel.from_entity,
+                    "to": to_entity.name if to_entity else rel.to_entity,
+                    "type": rel.type,
+                    "weight": round(rel.weight, 2),
+                })
+
+        # Count connected components (clusters)
+        cluster_count = self._count_connected_components()
+
+        # Generate recommendations
+        recommendations = []
+        if orphans:
+            recommendations.append(
+                f"Connect {len(orphans)} orphan entities or consider merging/deleting them"
+            )
+        if duplicates:
+            recommendations.append(
+                f"Review {len(duplicates)} potential duplicate groups for merging"
+            )
+        if overloaded:
+            recommendations.append(
+                f"Consider splitting {len(overloaded)} overloaded entities into sub-concepts"
+            )
+        if weak_relations:
+            recommendations.append(
+                f"Review {len(weak_relations)} weak relations — may be noise or need strengthening"
+            )
+        if cluster_count > 1:
+            recommendations.append(
+                f"Graph has {cluster_count} disconnected clusters — consider linking them"
+            )
+        if not recommendations:
+            recommendations.append("Graph looks healthy! Keep up the good knowledge hygiene.")
+
+        return {
+            "summary": {
+                "total_entities": len(self.state.entities),
+                "total_relations": len(self.state.relations),
+                "orphan_count": len(orphans),
+                "duplicate_groups": len(duplicates),
+                "overloaded_count": len(overloaded),
+                "weak_relation_count": len(weak_relations),
+                "cluster_count": cluster_count,
+            },
+            "issues": {
+                "orphans": orphans[:10],  # Top 10
+                "potential_duplicates": duplicates[:10],
+                "overloaded_entities": overloaded[:10],
+                "weak_relations": weak_relations[:10],
+            },
+            "recommendations": recommendations,
+        }
+
+    def _count_connected_components(self) -> int:
+        """Count number of disconnected subgraphs."""
+        if not self.state.entities:
+            return 0
+
+        # Build adjacency list
+        adj: dict[str, set[str]] = {eid: set() for eid in self.state.entities}
+        for rel in self.state.relations:
+            if rel.from_entity in adj and rel.to_entity in adj:
+                adj[rel.from_entity].add(rel.to_entity)
+                adj[rel.to_entity].add(rel.from_entity)
+
+        # BFS to find components
+        visited = set()
+        components = 0
+
+        for start in self.state.entities:
+            if start in visited:
+                continue
+
+            # BFS from this node
+            queue = [start]
+            while queue:
+                node = queue.pop(0)
+                if node in visited:
+                    continue
+                visited.add(node)
+                queue.extend(n for n in adj[node] if n not in visited)
+
+            components += 1
+
+        return components
+
+    def suggest_relations(self, entity: str, limit: int = 5) -> list[dict]:
+        """Suggest potential relations for an entity.
+
+        Based on:
+        - Semantic similarity to other entities
+        - Co-occurrence in observations
+        - Common patterns
+
+        Args:
+            entity: Entity name/ID
+            limit: Max suggestions
+
+        Returns:
+            List of suggested relations with confidence
+        """
+        entity_id = self._resolve_entity(entity)
+        if not entity_id:
+            return [{"error": f"Entity not found: {entity}"}]
+
+        entity_obj = self.state.entities[entity_id]
+
+        # Get existing relations to avoid duplicates
+        existing_targets = set()
+        for rel in self.state.relations:
+            if rel.from_entity == entity_id:
+                existing_targets.add(rel.to_entity)
+            elif rel.to_entity == entity_id:
+                existing_targets.add(rel.from_entity)
+
+        suggestions = []
+
+        # 1. Semantic similarity via vector search
+        if self._vector_index is not None:
+            try:
+                entity_text = f"{entity_obj.name} {' '.join(o.text for o in entity_obj.observations)}"
+                search_results = self.vector_index.search(entity_text, limit=20)
+
+                for result_id, score in search_results:
+                    if result_id == entity_id or result_id in existing_targets:
+                        continue
+                    if result_id not in self.state.entities:
+                        continue
+
+                    other = self.state.entities[result_id]
+                    if score > 0.4:
+                        rel_type = self._guess_relation_type(entity_obj, other)
+                        suggestions.append({
+                            "target": other.name,
+                            "target_id": result_id,
+                            "suggested_relation": rel_type,
+                            "confidence": round(score, 2),
+                            "reason": "semantic similarity",
+                        })
+            except Exception:
+                pass
+
+        # 2. Co-occurrence in observations (entity name mentioned in other's observations)
+        entity_text_lower = " ".join(o.text.lower() for o in entity_obj.observations)
+
+        for oid, other in self.state.entities.items():
+            if oid == entity_id or oid in existing_targets:
+                continue
+
+            # Check if other entity's name appears in our observations
+            if other.name.lower() in entity_text_lower:
+                suggestions.append({
+                    "target": other.name,
+                    "target_id": oid,
+                    "suggested_relation": "mentions",
+                    "confidence": 0.7,
+                    "reason": f"'{other.name}' mentioned in observations",
+                })
+
+            # Check if our name appears in other's observations
+            other_text_lower = " ".join(o.text.lower() for o in other.observations)
+            if entity_obj.name.lower() in other_text_lower:
+                # Only add if not already suggested
+                existing = [s for s in suggestions if s["target_id"] == oid]
+                if not existing:
+                    suggestions.append({
+                        "target": other.name,
+                        "target_id": oid,
+                        "suggested_relation": "mentioned_by",
+                        "confidence": 0.65,
+                        "reason": f"mentioned in '{other.name}' observations",
+                    })
+
+        # Dedupe and sort by confidence
+        seen = set()
+        unique = []
+        for s in sorted(suggestions, key=lambda x: x["confidence"], reverse=True):
+            if s["target_id"] not in seen:
+                seen.add(s["target_id"])
+                unique.append(s)
+
+        return unique[:limit]
+
+    def _guess_relation_type(self, entity, other) -> str:
+        """Guess appropriate relation type based on entity types."""
+        type_map = {
+            ("concept", "project"): "used_by",
+            ("project", "concept"): "uses",
+            ("decision", "concept"): "decides_on",
+            ("concept", "decision"): "decided_by",
+            ("pattern", "concept"): "applies_to",
+            ("concept", "pattern"): "has_pattern",
+            ("learning", "concept"): "about",
+            ("question", "concept"): "about",
+            ("project", "project"): "related_to",
+        }
+        return type_map.get((entity.type, other.type), "related_to")

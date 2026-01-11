@@ -279,6 +279,119 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_session_start(args: argparse.Namespace) -> int:
+    """Signal session start and get initial context."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}")
+        print("Run `mnemograph-cli status` to check your setup.")
+        return 1
+
+    session_id = args.session_id or f"cli-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    engine = MemoryEngine(memory_dir, session_id)
+    result = engine.session_start(project_hint=args.project)
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"Session started: {result['session_id']}")
+        print(f"Entities: {result['memory_summary']['entity_count']}")
+        print(f"Relations: {result['memory_summary']['relation_count']}")
+        if result.get('project'):
+            print(f"Project: {result['project']}")
+        print()
+        print("Context:")
+        print(result['context'])
+
+    return 0
+
+
+def cmd_session_end(args: argparse.Namespace) -> int:
+    """Signal session end, optionally save summary."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}")
+        return 1
+
+    session_id = args.session_id or f"cli-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    engine = MemoryEngine(memory_dir, session_id)
+    result = engine.session_end(summary=args.summary)
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"Session ended: {result['status']}")
+        if result.get('summary_stored'):
+            print("Summary stored in knowledge graph.")
+        print(f"Tip: {result['tip']}")
+
+    return 0
+
+
+def cmd_primer(args: argparse.Namespace) -> int:
+    """Get orientation primer for the knowledge graph."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}")
+        return 1
+
+    session_id = f"cli-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    engine = MemoryEngine(memory_dir, session_id)
+    result = engine.get_primer()
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print("=== Knowledge Graph Primer ===\n")
+        print(f"Entities: {result['status']['entity_count']}")
+        print(f"Relations: {result['status']['relation_count']}")
+
+        if result['status']['types']:
+            print("\nEntity types:")
+            for t, count in result['status']['types'].items():
+                print(f"  {t}: {count}")
+
+        if result['recent_activity']:
+            print("\nRecent activity:")
+            for e in result['recent_activity']:
+                print(f"  - {e['name']} ({e['type']})")
+
+        print(f"\nQuick start: {result['quick_start']}")
+
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Export graph as JSON."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    event_store = EventStore(memory_dir / "events.jsonl")
+    events = event_store.read_all()
+    state = materialize(events)
+
+    result = {
+        "entities": [e.model_dump(mode="json") for e in state.entities.values()],
+        "relations": [r.model_dump(mode="json") for r in state.relations],
+    }
+
+    output = json.dumps(result, indent=2, default=str)
+
+    if args.output:
+        Path(args.output).write_text(output)
+        print(f"Exported to {args.output}", file=sys.stderr)
+    else:
+        print(output)
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -317,6 +430,55 @@ def main(argv: list[str] | None = None) -> int:
     # sessions command
     sessions_parser = subparsers.add_parser("sessions", help="List all sessions")
     sessions_parser.set_defaults(func=cmd_sessions)
+
+    # session start command
+    session_start_parser = subparsers.add_parser(
+        "session-start",
+        help="Signal session start and get initial context",
+    )
+    session_start_parser.add_argument(
+        "--project", help="Project name or path for context"
+    )
+    session_start_parser.add_argument(
+        "--session-id", help="Custom session ID (default: auto-generated)"
+    )
+    session_start_parser.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+    session_start_parser.set_defaults(func=cmd_session_start)
+
+    # session end command
+    session_end_parser = subparsers.add_parser(
+        "session-end",
+        help="Signal session end, optionally save summary",
+    )
+    session_end_parser.add_argument(
+        "--summary", "-m", help="Session summary to store"
+    )
+    session_end_parser.add_argument(
+        "--session-id", help="Custom session ID (default: auto-generated)"
+    )
+    session_end_parser.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+    session_end_parser.set_defaults(func=cmd_session_end)
+
+    # primer command
+    primer_parser = subparsers.add_parser(
+        "primer",
+        help="Get orientation primer for the knowledge graph",
+    )
+    primer_parser.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+    primer_parser.set_defaults(func=cmd_primer)
+
+    # export command (existing but let's verify it's here or add it)
+    export_parser = subparsers.add_parser("export", help="Export graph as JSON")
+    export_parser.add_argument(
+        "--output", "-o", help="Output file (default: stdout)"
+    )
+    export_parser.set_defaults(func=cmd_export)
 
     args = parser.parse_args(argv)
     return args.func(args)
