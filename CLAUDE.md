@@ -1499,7 +1499,7 @@ If I'm going in circles, ask me to:
 
 ---
 
-## Implementation Status (v0.1.2)
+## Implementation Status (v0.1.3)
 
 **Completed:**
 - ✅ Phase 0: Bootstrap (MCP protocol understanding)
