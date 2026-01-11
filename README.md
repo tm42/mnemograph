@@ -253,14 +253,9 @@ uv run pytest              # Run tests
 uv run ruff check .        # Lint
 uv run mnemograph          # Run MCP server directly
 ```
-
 ## Based On
 
-Mnemograph builds on ideas from:
-- [MCP server-memory](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) — Anthropic's official memory server (baseline)
-- [Mem0](https://github.com/mem0ai/mem0) — extraction/consolidation patterns
-- [Graphiti](https://github.com/getzep/graphiti) — bi-temporal modeling inspiration
-- Event sourcing principles — append-only logs, state materialization
+Mnemograph builds on [MCP server-memory](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) — Anthropic's official memory server
 
 ## License
 
