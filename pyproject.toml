@@ -1,6 +1,6 @@
 [project]
 name = "mnemograph"
-version = "0.1.0"
+version = "0.1.1"
 description = "Event-sourced knowledge graph memory system for Claude Code"
 readme = "README.md"
 requires-python = ">=3.11"
