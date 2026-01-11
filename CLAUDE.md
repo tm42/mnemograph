@@ -1499,7 +1499,7 @@ If I'm going in circles, ask me to:
 
 ---
 
-## Implementation Status (v0.1.3)
+## Implementation Status (v0.2.0)
 
 **Completed:**
 - ✅ Phase 0: Bootstrap (MCP protocol understanding)
@@ -1511,9 +1511,53 @@ If I'm going in circles, ask me to:
 - ✅ Phase 7: VCS CLI extensions (event rewind, time travel)
 - ✅ Edge weights (recency, co-access, explicit importance)
 - ✅ Graph visualization (D3.js viewer with layout algorithms, color modes, live refresh)
+- ✅ Smart retrieval with token management (structure-only for large results)
+- ✅ `remember()` for atomic knowledge storage
+- ✅ First-run onboarding with guide seeding
+- ✅ Renamed tools: `memory_context` → `recall`, removed `search_nodes`
 
 **Deferred:**
 - Phase 5: Sub-agent synthesis (parked for now)
+
+---
+
+## Development Workflow
+
+### Running Tests
+
+```bash
+# From the mnemograph directory — use python -m pytest, NOT pytest directly
+/Users/tm42/.local/bin/uv run python -m pytest -x -q
+
+# Or with full path
+/Users/tm42/.local/bin/uv run --directory /Users/tm42/_mnemograph python -m pytest -x -q
+```
+
+**IMPORTANT:** Direct `pytest` command fails with "No such file" error. Always use `python -m pytest`.
+
+### Release Workflow
+
+GitHub Actions auto-publishes to PyPI and MCP registry when a version tag is pushed.
+
+**Steps to release:**
+
+1. Update version in `pyproject.toml`
+2. Update version in `server.json` — **BOTH** `version` fields (top-level AND `packages[0].version`)
+3. Commit the version bump
+4. Create tag: `git tag vX.Y.Z`
+5. Push commits: `git push origin main`
+6. **Push tag separately**: `git push origin vX.Y.Z`
+
+**CRITICAL:** Pushing commits alone does NOT trigger the release. You MUST push the tag separately.
+
+```bash
+# Example release
+git add pyproject.toml server.json
+git commit -m "chore: Bump version to 0.2.1"
+git tag v0.2.1
+git push origin main
+git push origin v0.2.1  # This triggers PyPI publish!
+```
 
 ---
 
