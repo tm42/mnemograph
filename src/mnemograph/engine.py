@@ -1706,6 +1706,7 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
         events = self.event_store.read_all()
         self.state = materialize(events)
         self._load_co_access_cache()
+        self._vector_index = None  # Force rebuild on next semantic search
 
         return {
             "status": "reloaded",

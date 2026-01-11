@@ -363,6 +363,27 @@ class TestReload:
             assert result["relations"] == 1
             assert result["events_processed"] >= 3
 
+    def test_reload_invalidates_vector_index(self):
+        """Reload should invalidate vector index so it rebuilds on next access."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test")
+
+            # Create entity and trigger vector index load
+            engine.create_entities([
+                {"name": "Original", "entityType": "concept", "observations": ["first version"]},
+            ])
+            # Access vector_index to lazy-load it
+            _ = engine.vector_index
+            assert engine._vector_index is not None
+
+            # Reload should invalidate the index
+            engine.reload()
+            assert engine._vector_index is None
+
+            # Next access should rebuild
+            _ = engine.vector_index
+            assert engine._vector_index is not None
+
 
 class TestRestoreStateAt:
     """Tests for restore_state_at() functionality."""
