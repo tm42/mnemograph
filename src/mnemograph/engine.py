@@ -1,11 +1,13 @@
 """Memory engine - orchestrates event store, state, and operations."""
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .events import EventStore
 from .models import Entity, MemoryEvent, Observation, Relation
-from .state import GraphState, materialize
+from .state import GraphState, materialize, materialize_at
+from .timeutil import parse_time_reference
 
 
 class MemoryEngine:
@@ -17,11 +19,50 @@ class MemoryEngine:
         self.event_store = EventStore(memory_dir / "events.jsonl")
         self.state: GraphState = self._load_state()
         self._vector_index = None  # Lazy-loaded
+        self._co_access_cache_path = memory_dir / "co_access_cache.json"
+        self._load_co_access_cache()
 
     def _load_state(self) -> GraphState:
         """Load state from events."""
         events = self.event_store.read_all()
         return materialize(events)
+
+    def _load_co_access_cache(self) -> None:
+        """Load cached co-access scores into relations.
+
+        Co-access scores are learned from usage patterns and cached
+        separately from the event-sourced state.
+        """
+        if not self._co_access_cache_path.exists():
+            return
+
+        try:
+            cache = json.loads(self._co_access_cache_path.read_text())
+            for rel in self.state.relations:
+                if rel.id in cache:
+                    rel.co_access_score = cache[rel.id].get("co_access_score", 0.0)
+                    rel.access_count = cache[rel.id].get("access_count", 0)
+                    if "last_accessed" in cache[rel.id]:
+                        rel.last_accessed = datetime.fromisoformat(cache[rel.id]["last_accessed"])
+        except (json.JSONDecodeError, ValueError):
+            # Corrupted cache, ignore
+            pass
+
+    def save_co_access_cache(self) -> None:
+        """Save co-access scores to cache file.
+
+        Call this periodically or on shutdown to persist learned scores.
+        """
+        cache = {}
+        for rel in self.state.relations:
+            if rel.co_access_score > 0 or rel.access_count > 0:
+                cache[rel.id] = {
+                    "co_access_score": rel.co_access_score,
+                    "access_count": rel.access_count,
+                    "last_accessed": rel.last_accessed.isoformat(),
+                }
+
+        self._co_access_cache_path.write_text(json.dumps(cache, indent=2))
 
     def _emit(self, op: str, data: dict) -> MemoryEvent:
         """Emit an event and update local state."""
@@ -377,10 +418,14 @@ class MemoryEngine:
             if query:
                 vector_results = self.vector_index.search(query, limit=10)
             result = get_medium_context(self.state, vector_results, focus, tokens)
+            # Save co-access learning
+            self.save_co_access_cache()
 
         elif depth == "deep":
             tokens = max_tokens or 5000
             result = get_deep_context(self.state, focus, tokens)
+            # Save co-access learning
+            self.save_co_access_cache()
 
         else:
             raise ValueError(f"Invalid depth: {depth}. Use 'shallow', 'medium', or 'deep'.")
@@ -392,3 +437,338 @@ class MemoryEngine:
             "entity_count": result.entity_count,
             "relation_count": result.relation_count,
         }
+
+    # --- Event Rewind ---
+
+    def state_at(self, timestamp: str | datetime) -> GraphState:
+        """Get graph state at a specific point in time.
+
+        Args:
+            timestamp: ISO datetime string, relative reference ("7 days ago"),
+                       or datetime object
+
+        Returns:
+            GraphState as it existed at that timestamp
+        """
+        if isinstance(timestamp, str):
+            ts = parse_time_reference(timestamp)
+        else:
+            ts = timestamp
+
+        events = self.event_store.read_all()
+        return materialize_at(events, ts)
+
+    def events_between(
+        self,
+        start: str | datetime,
+        end: str | datetime | None = None,
+    ) -> list[MemoryEvent]:
+        """Get events in a time range.
+
+        Args:
+            start: Start time (ISO string, relative reference, or datetime)
+            end: End time (default: now)
+
+        Returns:
+            List of events in the range
+        """
+        if isinstance(start, str):
+            start_ts = parse_time_reference(start)
+        else:
+            start_ts = start
+
+        if end is None:
+            end_ts = datetime.now(timezone.utc)
+        elif isinstance(end, str):
+            end_ts = parse_time_reference(end)
+        else:
+            end_ts = end
+
+        events = self.event_store.read_all()
+        return [e for e in events if start_ts <= e.ts <= end_ts]
+
+    def diff_between(
+        self,
+        start: str | datetime,
+        end: str | datetime | None = None,
+    ) -> dict:
+        """Compute what changed between two points in time.
+
+        Args:
+            start: Start time
+            end: End time (default: now)
+
+        Returns:
+            Dict with entities (added/removed/modified) and relations (added/removed)
+        """
+        if isinstance(start, str):
+            start_ts = parse_time_reference(start)
+        else:
+            start_ts = start
+
+        if end is None:
+            end_ts = datetime.now(timezone.utc)
+        elif isinstance(end, str):
+            end_ts = parse_time_reference(end)
+        else:
+            end_ts = end
+
+        events = self.event_store.read_all()
+        state_start = materialize_at(events, start_ts)
+        state_end = materialize_at(events, end_ts)
+
+        return {
+            "start_timestamp": start_ts.isoformat(),
+            "end_timestamp": end_ts.isoformat(),
+            "entities": self._diff_entities(state_start, state_end),
+            "relations": self._diff_relations(state_start, state_end),
+            "event_count": len([e for e in events if start_ts < e.ts <= end_ts]),
+        }
+
+    def _diff_entities(self, old: GraphState, new: GraphState) -> dict:
+        """Compute entity differences between two states."""
+        old_ids = set(old.entities.keys())
+        new_ids = set(new.entities.keys())
+
+        added_ids = new_ids - old_ids
+        removed_ids = old_ids - new_ids
+        common_ids = old_ids & new_ids
+
+        # Check for modifications in common entities
+        modified = []
+        for eid in common_ids:
+            old_entity = old.entities[eid]
+            new_entity = new.entities[eid]
+
+            changes = self._entity_changes(old_entity, new_entity)
+            if changes:
+                modified.append({
+                    "id": eid,
+                    "name": new_entity.name,
+                    "changes": changes,
+                })
+
+        return {
+            "added": [new.entities[eid].to_summary() for eid in added_ids],
+            "removed": [old.entities[eid].to_summary() for eid in removed_ids],
+            "modified": modified,
+        }
+
+    def _entity_changes(self, old: Entity, new: Entity) -> dict:
+        """Compute specific changes between two entity versions."""
+        changes = {}
+
+        if old.name != new.name:
+            changes["name"] = {"old": old.name, "new": new.name}
+        if old.type != new.type:
+            changes["type"] = {"old": old.type, "new": new.type}
+
+        # Check observations
+        old_obs_ids = {o.id for o in old.observations}
+        new_obs_ids = {o.id for o in new.observations}
+
+        added_obs = new_obs_ids - old_obs_ids
+        removed_obs = old_obs_ids - new_obs_ids
+
+        if added_obs or removed_obs:
+            changes["observations"] = {
+                "added": len(added_obs),
+                "removed": len(removed_obs),
+            }
+
+        return changes
+
+    def _diff_relations(self, old: GraphState, new: GraphState) -> dict:
+        """Compute relation differences between two states."""
+        old_ids = {r.id for r in old.relations}
+        new_ids = {r.id for r in new.relations}
+
+        added_ids = new_ids - old_ids
+        removed_ids = old_ids - new_ids
+
+        # Build lookup maps
+        new_by_id = {r.id: r for r in new.relations}
+        old_by_id = {r.id: r for r in old.relations}
+
+        return {
+            "added": [new_by_id[rid].to_summary() for rid in added_ids],
+            "removed": [old_by_id[rid].to_summary() for rid in removed_ids],
+        }
+
+    def get_entity_history(self, entity_name: str) -> list[dict]:
+        """Get the history of changes to an entity.
+
+        Returns list of events that affected this entity, oldest first.
+        """
+        entity_id = self._resolve_entity(entity_name)
+        if not entity_id:
+            return []
+
+        events = self.event_store.read_all()
+
+        relevant = [
+            e for e in events
+            if e.data.get("id") == entity_id
+            or e.data.get("entity_id") == entity_id
+        ]
+
+        return [
+            {
+                "timestamp": e.ts.isoformat(),
+                "operation": e.op,
+                "session_id": e.session_id,
+                "data": e.data,
+            }
+            for e in relevant
+        ]
+
+    # --- Edge Weights ---
+
+    def get_relation_weight(self, relation_id: str) -> dict | None:
+        """Get weight breakdown for a relation.
+
+        Args:
+            relation_id: ID of the relation (full ID or prefix)
+
+        Returns:
+            Weight breakdown dict, or None if relation not found
+        """
+        # Support prefix matching
+        relation = None
+        for r in self.state.relations:
+            if r.id == relation_id or r.id.startswith(relation_id):
+                relation = r
+                break
+
+        if not relation:
+            return None
+
+        # Get entity names for context
+        from_entity = self.state.entities.get(relation.from_entity)
+        to_entity = self.state.entities.get(relation.to_entity)
+
+        return {
+            "relation_id": relation.id,
+            "from_entity": from_entity.name if from_entity else relation.from_entity,
+            "to_entity": to_entity.name if to_entity else relation.to_entity,
+            "relation_type": relation.type,
+            "combined_weight": relation.weight,
+            "components": {
+                "recency": relation.recency_score,
+                "co_access": relation.co_access_score,
+                "explicit": relation.explicit_weight,
+            },
+            "metadata": {
+                "access_count": relation.access_count,
+                "last_accessed": relation.last_accessed.isoformat(),
+                "created_at": relation.created_at.isoformat(),
+            },
+        }
+
+    def set_relation_importance(self, relation_id: str, importance: float) -> dict | None:
+        """Set explicit weight for a relation.
+
+        Args:
+            relation_id: ID of the relation (full ID or prefix)
+            importance: Value from 0.0 (unimportant) to 1.0 (critical)
+
+        Returns:
+            Updated weight breakdown, or None if relation not found
+
+        Raises:
+            ValueError: If importance is not between 0.0 and 1.0
+        """
+        if not 0.0 <= importance <= 1.0:
+            raise ValueError("Importance must be between 0.0 and 1.0")
+
+        # Find the relation
+        relation = None
+        for r in self.state.relations:
+            if r.id == relation_id or r.id.startswith(relation_id):
+                relation = r
+                break
+
+        if not relation:
+            return None
+
+        old_weight = relation.explicit_weight
+
+        # Emit event for replayability
+        self._emit("update_weight", {
+            "relation_id": relation.id,
+            "weight_type": "explicit",
+            "old_value": old_weight,
+            "new_value": importance,
+        })
+
+        return self.get_relation_weight(relation.id)
+
+    def get_strongest_connections(
+        self,
+        entity_name: str,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Get an entity's strongest connections by weight.
+
+        Args:
+            entity_name: Name or ID of the entity
+            limit: Maximum number of connections to return
+
+        Returns:
+            List of connection info dicts sorted by weight (strongest first)
+        """
+        from .weights import get_strongest_connections as _get_strongest
+
+        entity_id = self._resolve_entity(entity_name)
+        if not entity_id:
+            return []
+
+        connections = _get_strongest(self.state, entity_id, limit)
+
+        result = []
+        for relation, neighbor_id in connections:
+            neighbor = self.state.entities.get(neighbor_id)
+            result.append({
+                "relation_id": relation.id,
+                "connected_to": neighbor.name if neighbor else neighbor_id,
+                "relation_type": relation.type,
+                "weight": relation.weight,
+                "components": {
+                    "recency": relation.recency_score,
+                    "co_access": relation.co_access_score,
+                    "explicit": relation.explicit_weight,
+                },
+            })
+
+        return result
+
+    def get_weak_relations(
+        self,
+        max_weight: float = 0.1,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Get relations below a weight threshold (candidates for pruning).
+
+        Args:
+            max_weight: Only include relations with weight <= this value
+            limit: Maximum number to return
+
+        Returns:
+            List of weak relations sorted by weight ascending
+        """
+        weak = [r for r in self.state.relations if r.weight <= max_weight]
+        weak.sort(key=lambda r: r.weight)
+
+        result = []
+        for r in weak[:limit]:
+            from_entity = self.state.entities.get(r.from_entity)
+            to_entity = self.state.entities.get(r.to_entity)
+            result.append({
+                "relation_id": r.id,
+                "from_entity": from_entity.name if from_entity else r.from_entity,
+                "to_entity": to_entity.name if to_entity else r.to_entity,
+                "relation_type": r.type,
+                "weight": r.weight,
+            })
+
+        return result

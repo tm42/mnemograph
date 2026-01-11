@@ -2,14 +2,17 @@
 
 Three depth levels:
 - shallow: summary stats, recent entities, hot topics (~500 tokens)
-- medium: vector search results + 1-hop neighbors (~2000 tokens)
-- deep: multi-hop subgraph from focus entities (~5000 tokens)
+- medium: vector search results + weighted 1-hop neighbors (~2000 tokens)
+- deep: weighted multi-hop subgraph from focus entities (~5000 tokens)
+
+Uses edge weights to prioritize stronger connections during traversal.
 """
 
 from dataclasses import dataclass
 
 from .models import Entity, Relation
 from .state import GraphState
+from .weights import weighted_bfs, update_co_access_scores
 
 
 @dataclass
@@ -111,42 +114,47 @@ def get_medium_context(
     vector_search_results: list[tuple[str, float]] | None = None,
     focus: list[str] | None = None,
     max_tokens: int = 2000,
+    min_weight: float = 0.1,
 ) -> ContextResult:
-    """Vector search results + 1-hop neighbors.
+    """Vector search results + weighted 1-hop neighbors.
 
+    Uses edge weights to prioritize stronger connections.
     Good for targeted queries about specific topics.
     """
-    entities: list[Entity] = []
-    seen_ids: set[str] = set()
+    # Collect seed entity IDs
+    seed_ids: list[str] = []
 
     # Start with focused entities
     if focus:
         for name in focus:
             entity = _find_entity_by_name(state, name)
-            if entity and entity.id not in seen_ids:
-                entities.append(entity)
-                seen_ids.add(entity.id)
+            if entity:
+                seed_ids.append(entity.id)
 
     # Add vector search results
     if vector_search_results:
         for entity_id, _score in vector_search_results:
-            if entity_id in state.entities and entity_id not in seen_ids:
-                entities.append(state.entities[entity_id])
-                seen_ids.add(entity_id)
+            if entity_id in state.entities and entity_id not in seed_ids:
+                seed_ids.append(entity_id)
 
-    # Expand with 1-hop neighbors
-    neighbor_ids: set[str] = set()
-    for entity in list(entities):  # Copy to avoid mutation during iteration
-        for r in state.relations:
-            if r.from_entity == entity.id and r.to_entity not in seen_ids:
-                neighbor_ids.add(r.to_entity)
-            elif r.to_entity == entity.id and r.from_entity not in seen_ids:
-                neighbor_ids.add(r.from_entity)
+    # Use weighted BFS with depth=1 for 1-hop neighbors
+    entity_ids = weighted_bfs(
+        start_entity_ids=seed_ids,
+        state=state,
+        max_depth=1,
+        max_nodes=30,  # Limit for medium context
+        min_weight=min_weight,
+    )
 
-    for nid in neighbor_ids:
-        if nid in state.entities:
-            entities.append(state.entities[nid])
-            seen_ids.add(nid)
+    # Build entity list
+    seen_ids: set[str] = set(entity_ids)
+    entities: list[Entity] = [
+        state.entities[eid] for eid in entity_ids
+        if eid in state.entities
+    ]
+
+    # Update co-access scores for learning
+    update_co_access_scores(state, seen_ids)
 
     # Format output
     content = _format_entities_with_relations(state, entities, seen_ids, max_tokens)
@@ -166,32 +174,49 @@ def get_deep_context(
     focus: list[str] | None = None,
     max_tokens: int = 5000,
     max_hops: int = 3,
+    max_nodes: int = 50,
+    min_weight: float = 0.1,
 ) -> ContextResult:
-    """Multi-hop subgraph extraction.
+    """Weighted multi-hop subgraph extraction.
 
+    Uses weighted_bfs to prioritize stronger connections.
     Comprehensive context for complex queries.
     """
-    if not focus:
-        # No focus = return recent entities with their subgraphs
+    # Resolve focus names to entity IDs
+    seed_ids: list[str] = []
+    if focus:
+        for name in focus:
+            entity = _find_entity_by_name(state, name)
+            if entity:
+                seed_ids.append(entity.id)
+
+    if not seed_ids:
+        # No focus = use recent entities as seeds
         recent = sorted(
             state.entities.values(),
             key=lambda e: e.updated_at,
             reverse=True,
         )[:10]
-        focus = [e.name for e in recent]
+        seed_ids = [e.id for e in recent]
 
-    # BFS from focus entities
-    seen_ids: set[str] = set()
-    entities: list[Entity] = []
+    # Use weighted BFS for traversal
+    entity_ids = weighted_bfs(
+        start_entity_ids=seed_ids,
+        state=state,
+        max_depth=max_hops,
+        max_nodes=max_nodes,
+        min_weight=min_weight,
+    )
 
-    for name in focus:
-        entity = _find_entity_by_name(state, name)
-        if entity:
-            neighbors = _get_neighbors_bfs(state, entity.id, max_hops)
-            for e in neighbors:
-                if e.id not in seen_ids:
-                    entities.append(e)
-                    seen_ids.add(e.id)
+    # Build entity list and seen set
+    seen_ids: set[str] = set(entity_ids)
+    entities: list[Entity] = [
+        state.entities[eid] for eid in entity_ids
+        if eid in state.entities
+    ]
+
+    # Update co-access scores for learning
+    update_co_access_scores(state, seen_ids)
 
     # Format with full details
     content = _format_entities_with_relations(state, entities, seen_ids, max_tokens, verbose=True)

@@ -265,6 +265,126 @@ async def list_tools() -> list[Tool]:
                 "required": ["depth"],
             },
         ),
+        # --- Event Rewind Tools ---
+        Tool(
+            name="get_state_at",
+            description="Get graph state at a specific point in time (event rewind)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "timestamp": {
+                        "type": "string",
+                        "description": "Time reference: ISO datetime (2025-01-15), relative (7 days ago), or named (yesterday, last week)",
+                    },
+                },
+                "required": ["timestamp"],
+            },
+        ),
+        Tool(
+            name="diff_timerange",
+            description="Show what changed between two points in time",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "description": "Start time (ISO, relative, or named)",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "End time (default: now)",
+                    },
+                },
+                "required": ["start"],
+            },
+        ),
+        Tool(
+            name="get_entity_history",
+            description="Get the history of all changes to an entity",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_name": {
+                        "type": "string",
+                        "description": "Entity name to get history for",
+                    },
+                },
+                "required": ["entity_name"],
+            },
+        ),
+        # --- Edge Weight Tools ---
+        Tool(
+            name="get_relation_weight",
+            description="Get weight breakdown for a relation (recency, co-access, explicit)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "relation_id": {
+                        "type": "string",
+                        "description": "Relation ID (full or prefix)",
+                    },
+                },
+                "required": ["relation_id"],
+            },
+        ),
+        Tool(
+            name="set_relation_importance",
+            description="Set explicit importance weight for a relation",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "relation_id": {
+                        "type": "string",
+                        "description": "Relation ID (full or prefix)",
+                    },
+                    "importance": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": "Importance from 0.0 (unimportant) to 1.0 (critical)",
+                    },
+                },
+                "required": ["relation_id", "importance"],
+            },
+        ),
+        Tool(
+            name="get_strongest_connections",
+            description="Get an entity's strongest connections by edge weight",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_name": {
+                        "type": "string",
+                        "description": "Entity name to get connections for",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Max connections to return",
+                    },
+                },
+                "required": ["entity_name"],
+            },
+        ),
+        Tool(
+            name="get_weak_relations",
+            description="Get relations below a weight threshold (pruning candidates)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "max_weight": {
+                        "type": "number",
+                        "default": 0.1,
+                        "description": "Only include relations with weight <= this value",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Max relations to return",
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -329,6 +449,60 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
             # Return the formatted content directly (it's markdown)
             return [TextContent(type="text", text=result["content"])]
+
+        # --- Event Rewind Tools ---
+        elif name == "get_state_at":
+            state = engine.state_at(arguments["timestamp"])
+            result = {
+                "timestamp": arguments["timestamp"],
+                "entity_count": len(state.entities),
+                "relation_count": len(state.relations),
+                "entities": [e.to_summary() for e in state.entities.values()],
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "diff_timerange":
+            result = engine.diff_between(
+                start=arguments["start"],
+                end=arguments.get("end"),
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_entity_history":
+            history = engine.get_entity_history(arguments["entity_name"])
+            return [TextContent(type="text", text=json.dumps(history, indent=2, default=str))]
+
+        # --- Edge Weight Tools ---
+        elif name == "get_relation_weight":
+            result = engine.get_relation_weight(arguments["relation_id"])
+            if result is None:
+                return [TextContent(type="text", text=f"Relation not found: {arguments['relation_id']}")]
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "set_relation_importance":
+            result = engine.set_relation_importance(
+                relation_id=arguments["relation_id"],
+                importance=arguments["importance"],
+            )
+            if result is None:
+                return [TextContent(type="text", text=f"Relation not found: {arguments['relation_id']}")]
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_strongest_connections":
+            result = engine.get_strongest_connections(
+                entity_name=arguments["entity_name"],
+                limit=arguments.get("limit", 10),
+            )
+            if not result:
+                return [TextContent(type="text", text=f"No connections found for: {arguments['entity_name']}")]
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_weak_relations":
+            result = engine.get_weak_relations(
+                max_weight=arguments.get("max_weight", 0.1),
+                limit=arguments.get("limit", 20),
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
