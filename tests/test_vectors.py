@@ -130,3 +130,178 @@ def test_vector_index_lazy_loading():
 
         # Now it should be loaded
         assert engine._vector_index is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vector Index Freshness Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_vector_index_updated_on_add_observations(engine_with_data):
+    """Test that vector index is re-indexed when observations are added."""
+    # First, do a semantic search to trigger index loading
+    initial_results = engine_with_data.search_semantic("cooking recipes food")
+    initial_names = [e["name"] for e in initial_results["entities"]]
+
+    # Python Programming should not be highly ranked for "cooking"
+    # Now add a cooking-related observation to Python Programming
+    engine_with_data.add_observations([{
+        "entityName": "Python Programming",
+        "contents": ["Great for building recipe recommendation systems and cooking apps"]
+    }])
+
+    # Search again - now Python Programming should rank higher for cooking
+    updated_results = engine_with_data.search_semantic("cooking recipes food")
+    updated_names = [e["name"] for e in updated_results["entities"]]
+
+    # Python should now be in results (if it wasn't) or ranked higher
+    assert "Python Programming" in updated_names
+
+
+def test_vector_index_updated_on_delete_observations(engine_with_data):
+    """Test that vector index is re-indexed when observations are deleted."""
+    # Trigger index loading
+    engine_with_data.search_semantic("test")
+
+    # Get initial hash for Python Programming
+    python_id = engine_with_data._resolve_entity("Python Programming")
+    initial_meta = engine_with_data._vector_index.conn.execute(
+        "SELECT text_hash FROM entity_meta WHERE entity_id = ?", (python_id,)
+    ).fetchone()
+    initial_hash = initial_meta[0] if initial_meta else None
+
+    # Delete an observation
+    engine_with_data.delete_observations([{
+        "entityName": "Python Programming",
+        "observations": ["Known for readable syntax"]
+    }])
+
+    # Hash should have changed (re-indexed with different text)
+    updated_meta = engine_with_data._vector_index.conn.execute(
+        "SELECT text_hash FROM entity_meta WHERE entity_id = ?", (python_id,)
+    ).fetchone()
+    updated_hash = updated_meta[0] if updated_meta else None
+
+    assert updated_hash != initial_hash
+
+
+def test_vector_index_cleaned_on_delete_entity(engine_with_data):
+    """Test that deleted entities are removed from vector index."""
+    # Trigger index loading and verify entity is indexed
+    engine_with_data.search_semantic("database")
+
+    db_id = engine_with_data._resolve_entity("Database Design")
+    assert db_id is not None
+
+    # Verify entity is in vector index
+    initial_count = engine_with_data._vector_index.conn.execute(
+        "SELECT COUNT(*) FROM entity_vectors WHERE entity_id = ?", (db_id,)
+    ).fetchone()[0]
+    assert initial_count == 1
+
+    # Delete the entity
+    engine_with_data.delete_entities(["Database Design"])
+
+    # Verify entity is removed from vector index
+    final_count = engine_with_data._vector_index.conn.execute(
+        "SELECT COUNT(*) FROM entity_vectors WHERE entity_id = ?", (db_id,)
+    ).fetchone()[0]
+    assert final_count == 0
+
+    # Verify metadata is also cleaned
+    meta_count = engine_with_data._vector_index.conn.execute(
+        "SELECT COUNT(*) FROM entity_meta WHERE entity_id = ?", (db_id,)
+    ).fetchone()[0]
+    assert meta_count == 0
+
+
+def test_semantic_search_always_available_via_property():
+    """Test that semantic search works even without prior vector access."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create entities
+        engine.create_entities([
+            {"name": "FastAPI", "entityType": "concept", "observations": ["Python web framework"]}
+        ])
+
+        # Vector index not yet loaded
+        assert engine._vector_index is None
+
+        # search_structure should still try semantic search (via lazy-loaded property)
+        # This tests that we removed the `if self._vector_index is not None:` guard
+        results = engine.search_structure("web frameworks python")
+
+        # Vector index should now be loaded
+        assert engine._vector_index is not None
+
+        # And we should get results
+        assert results["matched_count"] >= 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GraphState Index Consistency Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_graphstate_index_consistency_after_materialize():
+    """Test that indices are consistent after materialization."""
+    from mnemograph.state import GraphState, materialize
+    from mnemograph.models import MemoryEvent
+
+    events = [
+        MemoryEvent(op="create_entity", session_id="test", data={
+            "id": "e1", "name": "Entity One", "type": "concept", "observations": []
+        }),
+        MemoryEvent(op="create_entity", session_id="test", data={
+            "id": "e2", "name": "Entity Two", "type": "concept", "observations": []
+        }),
+        MemoryEvent(op="create_relation", session_id="test", data={
+            "id": "r1", "from_entity": "e1", "to_entity": "e2", "type": "relates_to"
+        }),
+    ]
+
+    state = materialize(events)
+    errors = state.check_index_consistency()
+    assert errors == [], f"Index consistency errors: {errors}"
+
+
+def test_graphstate_index_consistency_after_apply_event():
+    """Test that indices remain consistent after incremental updates."""
+    from mnemograph.state import GraphState, materialize, apply_event
+    from mnemograph.models import MemoryEvent
+
+    # Start with some entities
+    events = [
+        MemoryEvent(op="create_entity", session_id="test", data={
+            "id": "e1", "name": "Entity One", "type": "concept", "observations": []
+        }),
+        MemoryEvent(op="create_entity", session_id="test", data={
+            "id": "e2", "name": "Entity Two", "type": "concept", "observations": []
+        }),
+    ]
+    state = materialize(events)
+
+    # Apply incremental updates
+    apply_event(state, MemoryEvent(op="create_relation", session_id="test", data={
+        "id": "r1", "from_entity": "e1", "to_entity": "e2", "type": "relates_to"
+    }))
+
+    errors = state.check_index_consistency()
+    assert errors == [], f"Index consistency errors after add relation: {errors}"
+
+    # Delete the relation
+    apply_event(state, MemoryEvent(op="delete_relation", session_id="test", data={
+        "from_entity": "e1", "to_entity": "e2", "type": "relates_to"
+    }))
+
+    errors = state.check_index_consistency()
+    assert errors == [], f"Index consistency errors after delete relation: {errors}"
+
+    # Delete an entity
+    apply_event(state, MemoryEvent(op="delete_entity", session_id="test", data={
+        "id": "e1"
+    }))
+
+    errors = state.check_index_consistency()
+    assert errors == [], f"Index consistency errors after delete entity: {errors}"

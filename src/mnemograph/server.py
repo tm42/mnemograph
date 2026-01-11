@@ -297,25 +297,10 @@ async def list_tools() -> list[Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
-            name="open_nodes",
-            description="Get FULL data for specific entities by name (includes all observations). Use after recall() to expand specific entities.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "names": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Entity names to retrieve",
-                    }
-                },
-                "required": ["names"],
-            },
-        ),
-        Tool(
             name="recall",
             description=(
                 "PRIMARY RETRIEVAL TOOL. Get relevant context with automatic token management. "
-                "Returns structure-only if results too large, with hints to use open_nodes() for full data. "
+                "Use focus=['EntityName'] to get full details on specific entities. "
                 "shallow=quick summary, medium=semantic search+neighbors, deep=full exploration."
             ),
             inputSchema={
@@ -334,11 +319,17 @@ async def list_tools() -> list[Tool]:
                     "focus": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Entity names to start traversal from",
+                        "description": "Entity names to retrieve in full detail (replaces open_nodes). Use this to expand specific entities.",
                     },
                     "max_tokens": {
                         "type": "integer",
                         "description": "Override default token budget",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["prose", "graph"],
+                        "default": "prose",
+                        "description": "Output format: prose (human-readable) or graph (JSON structure)",
                     },
                 },
                 "required": ["depth"],
@@ -655,6 +646,126 @@ async def list_tools() -> list[Tool]:
                 "required": ["timestamp"],
             },
         ),
+        # --- Branch Tools ---
+        Tool(
+            name="branch_list",
+            description=(
+                "List all memory branches. Branches are filtered views of the knowledge graph. "
+                "Main branch sees everything; other branches see filtered subsets."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "include_archived": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include archived branches",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="branch_current",
+            description="Get the name and details of the currently active branch.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="branch_create",
+            description=(
+                "Create a new branch with seed entities. Uses BFS to expand from seeds to N-hop neighbors. "
+                "Branch names follow format: <type>/<name> where type is project|feature|domain|spike|archive."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Branch name (e.g., 'project/auth-service', 'feature/jwt')",
+                    },
+                    "seed_entities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Entity names to seed the branch from",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional branch description",
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "default": 2,
+                        "description": "How many hops from seeds to include (default: 2)",
+                    },
+                    "checkout": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Switch to the new branch after creation",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="branch_checkout",
+            description=(
+                "Switch to a different branch. Changes what entities/relations are visible in queries. "
+                "Use 'main' to see everything."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Branch name to switch to",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="branch_add",
+            description=(
+                "Add entities to the current branch. Only works on non-main branches. "
+                "Optionally includes relations between added entities."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Entity names to add to current branch",
+                    },
+                    "include_relations": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Also include relations between added entities",
+                    },
+                },
+                "required": ["entity_names"],
+            },
+        ),
+        Tool(
+            name="branch_diff",
+            description=(
+                "Show differences between two branches. Returns entities and relations that are "
+                "only in one branch vs the other, plus what's common to both."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "branch_a": {
+                        "type": "string",
+                        "description": "First branch (default: current branch)",
+                    },
+                    "branch_b": {
+                        "type": "string",
+                        "description": "Second branch to compare",
+                    },
+                },
+                "required": ["branch_b"],
+            },
+        ),
     ]
 
 
@@ -715,16 +826,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = engine.read_graph()
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
-        elif name == "open_nodes":
-            result = engine.open_nodes(arguments["names"])
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
-
         elif name == "recall":
             result = engine.recall(
                 depth=arguments["depth"],
                 query=arguments.get("query"),
                 focus=arguments.get("focus"),
                 max_tokens=arguments.get("max_tokens"),
+                format=arguments.get("format", "prose"),
             )
             # Return full result dict for structure-only responses
             if result.get("structure_only"):
@@ -852,6 +960,122 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 reason=arguments.get("reason", ""),
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        # --- Branch Tools ---
+        elif name == "branch_list":
+            branches = engine.branch_manager.list(
+                include_archived=arguments.get("include_archived", False)
+            )
+            current = engine.branch_manager.current_branch_name()
+            result = [
+                {
+                    "name": b.name,
+                    "is_current": b.name == current,
+                    "entity_count": len(b.entity_ids) if b.name != "main" else len(engine.state.entities),
+                    "relation_count": len(b.relation_ids) if b.name != "main" else len(engine.state.relations),
+                    "description": b.description,
+                    "is_active": b.is_active,
+                }
+                for b in branches
+            ]
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "branch_current":
+            branch = engine.branch_manager.current_branch()
+            result = {
+                "name": branch.name,
+                "description": branch.description,
+                "entity_count": len(branch.entity_ids) if branch.name != "main" else len(engine.state.entities),
+                "relation_count": len(branch.relation_ids) if branch.name != "main" else len(engine.state.relations),
+                "parent": branch.parent,
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "branch_create":
+            branch = engine.branch_manager.create(
+                name=arguments["name"],
+                seed_entities=arguments.get("seed_entities", []),
+                description=arguments.get("description", ""),
+                depth=arguments.get("depth", 2),
+            )
+            if arguments.get("checkout", False):
+                engine.branch_manager.checkout(arguments["name"])
+
+            result = {
+                "name": branch.name,
+                "entity_count": len(branch.entity_ids),
+                "relation_count": len(branch.relation_ids),
+                "checked_out": arguments.get("checkout", False),
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "branch_checkout":
+            branch = engine.branch_manager.checkout(arguments["name"])
+            result = {
+                "switched_to": branch.name,
+                "entity_count": len(branch.entity_ids) if branch.name != "main" else len(engine.state.entities),
+                "relation_count": len(branch.relation_ids) if branch.name != "main" else len(engine.state.relations),
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "branch_add":
+            current = engine.branch_manager.current_branch_name()
+            if current == "main":
+                return [TextContent(type="text", text=json.dumps({
+                    "error": "Cannot add entities to main branch (main sees everything)"
+                }))]
+
+            # Resolve entity names to IDs
+            entity_ids = []
+            not_found = []
+            for name_str in arguments["entity_names"]:
+                eid = engine._resolve_entity(name_str)
+                if eid:
+                    entity_ids.append(eid)
+                else:
+                    not_found.append(name_str)
+
+            if entity_ids:
+                branch = engine.branch_manager.add_entities(
+                    current,
+                    entity_ids,
+                    include_relations=arguments.get("include_relations", True),
+                )
+                result: dict = {
+                    "added": len(entity_ids),
+                    "total_entities": len(branch.entity_ids),
+                    "total_relations": len(branch.relation_ids),
+                }
+                if not_found:
+                    result["not_found"] = not_found
+            else:
+                result = {"error": "No valid entities found", "not_found": not_found}
+
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "branch_diff":
+            branch_a = arguments.get("branch_a") or engine.branch_manager.current_branch_name()
+            branch_b = arguments["branch_b"]
+            diff = engine.branch_manager.diff(branch_a, branch_b)
+
+            # Convert sets to lists for JSON
+            result = {
+                "branch_a": diff["branch_a"],
+                "branch_b": diff["branch_b"],
+                "only_in_a": {
+                    "entity_count": len(diff["only_in_a"]["entities"]),
+                    "relation_count": len(diff["only_in_a"]["relations"]),
+                },
+                "only_in_b": {
+                    "entity_count": len(diff["only_in_b"]["entities"]),
+                    "relation_count": len(diff["only_in_b"]["relations"]),
+                },
+                "in_both": {
+                    "entity_count": len(diff["in_both"]["entities"]),
+                    "relation_count": len(diff["in_both"]["relations"]),
+                },
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]

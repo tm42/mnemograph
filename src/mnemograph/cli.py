@@ -13,6 +13,13 @@ from .models import MemoryEvent
 from .state import materialize
 
 
+def _get_engine(args: argparse.Namespace) -> MemoryEngine:
+    """Create engine instance from args."""
+    memory_dir = Path(args.memory_path)
+    session_id = f"cli-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    return MemoryEngine(memory_dir, session_id)
+
+
 def parse_since(since_str: str) -> datetime:
     """Parse relative time strings like '1 hour ago', '2 days ago'."""
     since_str = since_str.lower().strip()
@@ -226,6 +233,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"Entities: {len(state.entities)}")
     print(f"Relations: {len(state.relations)}")
 
+    # Show current branch
+    engine = _get_engine(args)
+    current_branch = engine.branch_manager.current_branch_name()
+    print(f"Branch: {current_branch}")
+
     if events:
         first = events[0].ts.strftime("%Y-%m-%d %H:%M:%S")
         last = events[-1].ts.strftime("%Y-%m-%d %H:%M:%S")
@@ -392,6 +404,390 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Branch Commands
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def cmd_branch_list(args: argparse.Namespace) -> int:
+    """List all branches."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+    branches = engine.branch_manager.list(include_archived=args.all)
+    current = engine.branch_manager.current_branch_name()
+
+    if args.json:
+        result = [
+            {
+                "name": b.name,
+                "is_current": b.name == current,
+                "entity_count": len(b.entity_ids) if b.name != "main" else len(engine.state.entities),
+                "relation_count": len(b.relation_ids) if b.name != "main" else len(engine.state.relations),
+                "description": b.description,
+                "is_active": b.is_active,
+            }
+            for b in branches
+        ]
+        print(json.dumps(result, indent=2))
+    else:
+        for branch in branches:
+            marker = "*" if branch.name == current else " "
+            if branch.name == "main":
+                entity_count = len(engine.state.entities)
+                rel_count = len(engine.state.relations)
+            else:
+                entity_count = len(branch.entity_ids)
+                rel_count = len(branch.relation_ids)
+            status = "" if branch.is_active else " [archived]"
+            print(f"{marker} {branch.name:<30} ({entity_count} entities, {rel_count} relations){status}")
+
+    return 0
+
+
+def cmd_branch_show(args: argparse.Namespace) -> int:
+    """Show details of a branch."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+    branch_name = args.name or engine.branch_manager.current_branch_name()
+
+    try:
+        branch = engine.branch_manager.get(branch_name)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        result = branch.to_dict()
+        result["is_current"] = branch_name == engine.branch_manager.current_branch_name()
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        current = engine.branch_manager.current_branch_name()
+        marker = " (current)" if branch_name == current else ""
+        print(f"Branch: {branch.name}{marker}")
+        print(f"Description: {branch.description or '(none)'}")
+        print(f"Parent: {branch.parent or '(none)'}")
+        print(f"Created: {branch.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Active: {branch.is_active}")
+
+        if branch.name == "main":
+            print(f"Entities: {len(engine.state.entities)} (all)")
+            print(f"Relations: {len(engine.state.relations)} (all)")
+        else:
+            print(f"Entities: {len(branch.entity_ids)}")
+            print(f"Relations: {len(branch.relation_ids)}")
+
+            if args.verbose and branch.entity_ids:
+                print("\nEntity IDs:")
+                for eid in sorted(branch.entity_ids)[:20]:
+                    entity = engine.state.entities.get(eid)
+                    name = entity.name if entity else "(deleted)"
+                    print(f"  {eid[:8]}  {name}")
+                if len(branch.entity_ids) > 20:
+                    print(f"  ... and {len(branch.entity_ids) - 20} more")
+
+    return 0
+
+
+def cmd_branch_create(args: argparse.Namespace) -> int:
+    """Create a new branch."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+
+    # Parse seed entities
+    seeds = args.seeds if args.seeds else []
+
+    try:
+        branch = engine.branch_manager.create(
+            name=args.name,
+            seed_entities=seeds,
+            description=args.description or "",
+            depth=args.depth,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.checkout:
+        engine.branch_manager.checkout(args.name)
+        print(f"Created and switched to branch '{args.name}'")
+    else:
+        print(f"Created branch '{args.name}'")
+
+    print(f"  Entities: {len(branch.entity_ids)}")
+    print(f"  Relations: {len(branch.relation_ids)}")
+
+    return 0
+
+
+def cmd_branch_delete(args: argparse.Namespace) -> int:
+    """Delete a branch."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+
+    if not args.yes:
+        confirm = input(f"Delete branch '{args.name}'? [y/N] ")
+        if confirm.lower() != "y":
+            print("Aborted.")
+            return 0
+
+    try:
+        engine.branch_manager.delete(args.name)
+        print(f"Deleted branch '{args.name}'")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def cmd_branch_checkout(args: argparse.Namespace) -> int:
+    """Switch to a branch."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+
+    try:
+        branch = engine.branch_manager.checkout(args.name)
+        print(f"Switched to branch '{args.name}'")
+        if branch.name != "main":
+            print(f"  Entities: {len(branch.entity_ids)}")
+            print(f"  Relations: {len(branch.relation_ids)}")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def cmd_branch_add(args: argparse.Namespace) -> int:
+    """Add entities to the current branch."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+    current = engine.branch_manager.current_branch_name()
+
+    if current == "main":
+        print("Cannot add entities to main branch (main sees everything).", file=sys.stderr)
+        return 1
+
+    # Resolve entity names to IDs
+    entity_ids = []
+    for name in args.entities:
+        eid = engine._resolve_entity(name)
+        if eid:
+            entity_ids.append(eid)
+        else:
+            print(f"Warning: Entity not found: {name}", file=sys.stderr)
+
+    if not entity_ids:
+        print("No valid entities to add.", file=sys.stderr)
+        return 1
+
+    try:
+        branch = engine.branch_manager.add_entities(
+            current,
+            entity_ids,
+            include_relations=not args.no_relations,
+        )
+        print(f"Added {len(entity_ids)} entities to '{current}'")
+        print(f"  Total entities: {len(branch.entity_ids)}")
+        print(f"  Total relations: {len(branch.relation_ids)}")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def cmd_branch_remove(args: argparse.Namespace) -> int:
+    """Remove entities from the current branch."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+    current = engine.branch_manager.current_branch_name()
+
+    if current == "main":
+        print("Cannot remove entities from main branch.", file=sys.stderr)
+        return 1
+
+    # Resolve entity names to IDs
+    entity_ids = []
+    for name in args.entities:
+        eid = engine._resolve_entity(name)
+        if eid:
+            entity_ids.append(eid)
+        else:
+            print(f"Warning: Entity not found: {name}", file=sys.stderr)
+
+    if not entity_ids:
+        print("No valid entities to remove.", file=sys.stderr)
+        return 1
+
+    try:
+        branch = engine.branch_manager.remove_entities(
+            current,
+            entity_ids,
+            cascade_relations=not args.keep_relations,
+        )
+        print(f"Removed {len(entity_ids)} entities from '{current}'")
+        print(f"  Remaining entities: {len(branch.entity_ids)}")
+        print(f"  Remaining relations: {len(branch.relation_ids)}")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def cmd_branch_diff(args: argparse.Namespace) -> int:
+    """Show diff between two branches."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+
+    branch_a = args.branch_a or engine.branch_manager.current_branch_name()
+    branch_b = args.branch_b
+
+    try:
+        diff = engine.branch_manager.diff(branch_a, branch_b)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(diff, indent=2))
+    else:
+        print(f"Diff: {diff['branch_a']} vs {diff['branch_b']}")
+        print()
+
+        # Only in A
+        if diff["only_in_a"]["entities"]:
+            print(f"Only in {diff['branch_a']} ({len(diff['only_in_a']['entities'])} entities):")
+            for eid in list(diff["only_in_a"]["entities"])[:10]:
+                entity = engine.state.entities.get(eid)
+                name = entity.name if entity else eid[:8]
+                print(f"  - {name}")
+            if len(diff["only_in_a"]["entities"]) > 10:
+                print(f"  ... and {len(diff['only_in_a']['entities']) - 10} more")
+            print()
+
+        # Only in B
+        if diff["only_in_b"]["entities"]:
+            print(f"Only in {diff['branch_b']} ({len(diff['only_in_b']['entities'])} entities):")
+            for eid in list(diff["only_in_b"]["entities"])[:10]:
+                entity = engine.state.entities.get(eid)
+                name = entity.name if entity else eid[:8]
+                print(f"  + {name}")
+            if len(diff["only_in_b"]["entities"]) > 10:
+                print(f"  ... and {len(diff['only_in_b']['entities']) - 10} more")
+            print()
+
+        # In both
+        if diff["in_both"]["entities"]:
+            print(f"In both ({len(diff['in_both']['entities'])} entities)")
+
+    return 0
+
+
+def cmd_branch_merge(args: argparse.Namespace) -> int:
+    """Merge source branch into target."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+    target = args.target or engine.branch_manager.current_branch_name()
+
+    try:
+        branch = engine.branch_manager.merge(args.source, target)
+        print(f"Merged '{args.source}' into '{target}'")
+        print(f"  Entities: {len(branch.entity_ids)}")
+        print(f"  Relations: {len(branch.relation_ids)}")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def cmd_branch_archive(args: argparse.Namespace) -> int:
+    """Archive a branch."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+
+    try:
+        branch = engine.branch_manager.archive(args.name)
+        print(f"Archived branch '{args.name}' -> '{branch.name}'")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def cmd_branch_unarchive(args: argparse.Namespace) -> int:
+    """Unarchive a branch."""
+    memory_dir = Path(args.memory_path)
+
+    if not memory_dir.exists():
+        print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
+        return 1
+
+    engine = _get_engine(args)
+
+    try:
+        branch = engine.branch_manager.unarchive(args.name, new_name=args.new_name)
+        print(f"Unarchived branch '{args.name}' -> '{branch.name}'")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -479,6 +875,87 @@ def main(argv: list[str] | None = None) -> int:
         "--output", "-o", help="Output file (default: stdout)"
     )
     export_parser.set_defaults(func=cmd_export)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Branch commands
+    # ─────────────────────────────────────────────────────────────────────────
+
+    branch_parser = subparsers.add_parser("branch", help="Branch management commands")
+    branch_subparsers = branch_parser.add_subparsers(dest="branch_command", required=True)
+
+    # branch list
+    branch_list_parser = branch_subparsers.add_parser("list", help="List all branches")
+    branch_list_parser.add_argument("--all", "-a", action="store_true", help="Include archived branches")
+    branch_list_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    branch_list_parser.set_defaults(func=cmd_branch_list)
+
+    # branch show
+    branch_show_parser = branch_subparsers.add_parser("show", help="Show branch details")
+    branch_show_parser.add_argument("name", nargs="?", help="Branch name (default: current)")
+    branch_show_parser.add_argument("--verbose", "-v", action="store_true", help="Show entity details")
+    branch_show_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    branch_show_parser.set_defaults(func=cmd_branch_show)
+
+    # branch create
+    branch_create_parser = branch_subparsers.add_parser("create", help="Create a new branch")
+    branch_create_parser.add_argument("name", help="Branch name (e.g., project/my-project)")
+    branch_create_parser.add_argument("--seeds", "-s", nargs="*", help="Seed entity names")
+    branch_create_parser.add_argument("--depth", "-d", type=int, default=2, help="Expansion depth (default: 2)")
+    branch_create_parser.add_argument("--description", "-m", help="Branch description")
+    branch_create_parser.add_argument("--checkout", "-c", action="store_true", help="Switch to new branch")
+    branch_create_parser.set_defaults(func=cmd_branch_create)
+
+    # branch delete
+    branch_delete_parser = branch_subparsers.add_parser("delete", help="Delete a branch")
+    branch_delete_parser.add_argument("name", help="Branch name to delete")
+    branch_delete_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    branch_delete_parser.set_defaults(func=cmd_branch_delete)
+
+    # branch checkout (also add as top-level 'checkout' command)
+    branch_checkout_parser = branch_subparsers.add_parser("checkout", help="Switch to a branch")
+    branch_checkout_parser.add_argument("name", help="Branch name to switch to")
+    branch_checkout_parser.set_defaults(func=cmd_branch_checkout)
+
+    # top-level checkout shortcut
+    checkout_parser = subparsers.add_parser("checkout", help="Switch to a branch (shortcut)")
+    checkout_parser.add_argument("name", help="Branch name to switch to")
+    checkout_parser.set_defaults(func=cmd_branch_checkout)
+
+    # branch add
+    branch_add_parser = branch_subparsers.add_parser("add", help="Add entities to current branch")
+    branch_add_parser.add_argument("entities", nargs="+", help="Entity names to add")
+    branch_add_parser.add_argument("--no-relations", action="store_true", help="Don't include relations")
+    branch_add_parser.set_defaults(func=cmd_branch_add)
+
+    # branch remove
+    branch_remove_parser = branch_subparsers.add_parser("remove", help="Remove entities from current branch")
+    branch_remove_parser.add_argument("entities", nargs="+", help="Entity names to remove")
+    branch_remove_parser.add_argument("--keep-relations", action="store_true", help="Don't cascade relation removal")
+    branch_remove_parser.set_defaults(func=cmd_branch_remove)
+
+    # branch diff
+    branch_diff_parser = branch_subparsers.add_parser("diff", help="Show diff between branches")
+    branch_diff_parser.add_argument("branch_a", nargs="?", help="First branch (default: current)")
+    branch_diff_parser.add_argument("branch_b", help="Second branch to compare")
+    branch_diff_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    branch_diff_parser.set_defaults(func=cmd_branch_diff)
+
+    # branch merge
+    branch_merge_parser = branch_subparsers.add_parser("merge", help="Merge source branch into target")
+    branch_merge_parser.add_argument("source", help="Source branch to merge from")
+    branch_merge_parser.add_argument("--target", "-t", help="Target branch (default: current)")
+    branch_merge_parser.set_defaults(func=cmd_branch_merge)
+
+    # branch archive
+    branch_archive_parser = branch_subparsers.add_parser("archive", help="Archive a branch")
+    branch_archive_parser.add_argument("name", help="Branch name to archive")
+    branch_archive_parser.set_defaults(func=cmd_branch_archive)
+
+    # branch unarchive
+    branch_unarchive_parser = branch_subparsers.add_parser("unarchive", help="Unarchive a branch")
+    branch_unarchive_parser.add_argument("name", help="Archived branch name")
+    branch_unarchive_parser.add_argument("--new-name", help="New name for restored branch")
+    branch_unarchive_parser.set_defaults(func=cmd_branch_unarchive)
 
     args = parser.parse_args(argv)
     return args.func(args)

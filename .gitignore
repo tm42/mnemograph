@@ -38,3 +38,4 @@ uv.lock
 
 # Internal dev docs (keep locally, not in repo)
 .specs/
+.notes/

@@ -77,6 +77,74 @@ class GraphState:
             self._connected_entities.add(rel.from_entity)
             self._connected_entities.add(rel.to_entity)
 
+    def check_index_consistency(self) -> list[str]:
+        """Validate that indices match base state. Returns list of errors.
+
+        This is a debug/test utility to detect index drift after incremental updates.
+        An empty list means indices are consistent.
+        """
+        errors: list[str] = []
+
+        # 1. Check _name_to_id matches entities
+        expected_name_to_id = {e.name: eid for eid, e in self.entities.items()}
+        if self._name_to_id != expected_name_to_id:
+            missing_in_index = set(expected_name_to_id.keys()) - set(self._name_to_id.keys())
+            extra_in_index = set(self._name_to_id.keys()) - set(expected_name_to_id.keys())
+            wrong_mapping = {
+                name for name in self._name_to_id
+                if name in expected_name_to_id and self._name_to_id[name] != expected_name_to_id[name]
+            }
+            if missing_in_index:
+                errors.append(f"_name_to_id missing entities: {missing_in_index}")
+            if extra_in_index:
+                errors.append(f"_name_to_id has stale entries: {extra_in_index}")
+            if wrong_mapping:
+                errors.append(f"_name_to_id has wrong mappings: {wrong_mapping}")
+
+        # 2. Check _outgoing matches relations
+        expected_outgoing: dict[str, list[Relation]] = {}
+        for rel in self.relations:
+            expected_outgoing.setdefault(rel.from_entity, []).append(rel)
+
+        for entity_id in set(expected_outgoing.keys()) | set(self._outgoing.keys()):
+            expected = set(id(r) for r in expected_outgoing.get(entity_id, []))
+            actual = set(id(r) for r in self._outgoing.get(entity_id, []))
+            if expected != actual:
+                errors.append(
+                    f"_outgoing[{entity_id}] mismatch: expected {len(expected_outgoing.get(entity_id, []))} "
+                    f"relations, got {len(self._outgoing.get(entity_id, []))}"
+                )
+
+        # 3. Check _incoming matches relations
+        expected_incoming: dict[str, list[Relation]] = {}
+        for rel in self.relations:
+            expected_incoming.setdefault(rel.to_entity, []).append(rel)
+
+        for entity_id in set(expected_incoming.keys()) | set(self._incoming.keys()):
+            expected = set(id(r) for r in expected_incoming.get(entity_id, []))
+            actual = set(id(r) for r in self._incoming.get(entity_id, []))
+            if expected != actual:
+                errors.append(
+                    f"_incoming[{entity_id}] mismatch: expected {len(expected_incoming.get(entity_id, []))} "
+                    f"relations, got {len(self._incoming.get(entity_id, []))}"
+                )
+
+        # 4. Check _connected_entities matches relation endpoints
+        expected_connected = set()
+        for rel in self.relations:
+            expected_connected.add(rel.from_entity)
+            expected_connected.add(rel.to_entity)
+
+        if self._connected_entities != expected_connected:
+            missing = expected_connected - self._connected_entities
+            extra = self._connected_entities - expected_connected
+            if missing:
+                errors.append(f"_connected_entities missing: {missing}")
+            if extra:
+                errors.append(f"_connected_entities has stale entries: {extra}")
+
+        return errors
+
 
 def materialize(events: list[MemoryEvent]) -> GraphState:
     """Replay events to build current state."""

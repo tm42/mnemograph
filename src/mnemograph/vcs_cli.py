@@ -1277,13 +1277,32 @@ def graph(ctx, export_path, with_context, open_only, watch):
         console.print("[yellow]![/yellow] No entities in graph. Create some first!")
         return
 
+    # Get current branch info for filtering
+    from .branches import BranchManager
+    branch_manager = BranchManager(memory_dir, lambda: state)
+    current_branch = branch_manager.current_branch_name()
+
+    if current_branch == "main":
+        # Main sees all entities
+        branch_entity_ids = None
+        branch_relation_ids = None
+    else:
+        # Other branches see only their filtered subset
+        branch = branch_manager.get(current_branch)
+        if branch:
+            branch_entity_ids = branch.entity_ids
+            branch_relation_ids = branch.relation_ids
+        else:
+            branch_entity_ids = None
+            branch_relation_ids = None
+
     # Export graph
     output_path = export_graph_for_viz(
         state=state,
         memory_dir=memory_dir,
-        branch_entity_ids=None,  # TODO: branch support
-        branch_relation_ids=None,
-        branch_name="main",
+        branch_entity_ids=branch_entity_ids,
+        branch_relation_ids=branch_relation_ids,
+        branch_name=current_branch,
         include_context=with_context,
         output_path=export_path,
     )
@@ -1328,13 +1347,29 @@ def graph(ctx, export_path, with_context, open_only, watch):
                     events_fresh = event_store_fresh.read_all()
                     state_fresh = materialize(events_fresh)
 
+                    # Get fresh branch info
+                    branch_manager_fresh = BranchManager(memory_dir, lambda: state_fresh)
+                    current_branch_fresh = branch_manager_fresh.current_branch_name()
+
+                    if current_branch_fresh == "main":
+                        fresh_entity_ids = None
+                        fresh_relation_ids = None
+                    else:
+                        branch_fresh = branch_manager_fresh.get(current_branch_fresh)
+                        if branch_fresh:
+                            fresh_entity_ids = branch_fresh.entity_ids
+                            fresh_relation_ids = branch_fresh.relation_ids
+                        else:
+                            fresh_entity_ids = None
+                            fresh_relation_ids = None
+
                     from .viz import export_graph_for_viz
                     fresh_output = export_graph_for_viz(
                         state=state_fresh,
                         memory_dir=memory_dir,
-                        branch_entity_ids=None,
-                        branch_relation_ids=None,
-                        branch_name="main",
+                        branch_entity_ids=fresh_entity_ids,
+                        branch_relation_ids=fresh_relation_ids,
+                        branch_name=current_branch_fresh,
                         include_context=with_context,
                     )
                     fresh_data = fresh_output.read_text()

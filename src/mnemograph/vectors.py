@@ -1,12 +1,42 @@
 """Vector index for semantic search using sqlite-vec and sentence-transformers."""
 
+import hashlib
+import logging
 import sqlite3
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
-import sqlite_vec
-from sentence_transformers import SentenceTransformer
-
 from .models import Entity
+
+logger = logging.getLogger(__name__)
+
+
+class VectorStatus(Enum):
+    """Status of the vector search subsystem."""
+
+    READY = "ready"
+    DEGRADED = "degraded"  # Extension loaded but embedding model failed
+    UNAVAILABLE = "unavailable"  # Extension failed to load
+
+
+@dataclass
+class VectorHealth:
+    """Health status of the vector index."""
+
+    status: VectorStatus
+    error: str | None = None
+    embedding_model: str | None = None
+    dimension: int | None = None
+
+
+def _stable_hash(text: str) -> str:
+    """Deterministic hash for change detection.
+
+    Uses SHA-256 instead of Python's hash() which is randomized
+    by default (PYTHONHASHSEED) for security reasons.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 class VectorIndex:
@@ -15,17 +45,76 @@ class VectorIndex:
     def __init__(self, db_path: Path, model_name: str = "all-MiniLM-L6-v2"):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._model: SentenceTransformer | None = None
         self._model_name = model_name
+        self._model = None
         self._dims: int | None = None
         self._conn: sqlite3.Connection | None = None
 
-    @property
-    def model(self) -> SentenceTransformer:
-        """Lazy-load the embedding model."""
-        if self._model is None:
+        # Track initialization status
+        self.health = VectorHealth(status=VectorStatus.UNAVAILABLE)
+        self._extension_loaded = False
+        self._model_loaded = False
+
+    def _try_load_extension(self) -> bool:
+        """Try to load sqlite-vec extension. Returns True on success."""
+        if self._extension_loaded:
+            return True
+
+        try:
+            import sqlite_vec
+
+            conn = sqlite3.connect(str(self.db_path))
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            self._conn = conn
+            self._extension_loaded = True
+            # Extension loaded, but still need model — set to DEGRADED until model loads
+            self.health = VectorHealth(
+                status=VectorStatus.DEGRADED,
+                error="Waiting for embedding model",
+            )
+            return True
+        except Exception as e:
+            self.health = VectorHealth(
+                status=VectorStatus.UNAVAILABLE,
+                error=f"sqlite-vec extension failed: {e}",
+            )
+            logger.warning(f"Vector search unavailable: {e}")
+            return False
+
+    def _try_load_model(self) -> bool:
+        """Try to load embedding model. Returns True on success."""
+        if self._model_loaded:
+            return True
+
+        try:
+            from sentence_transformers import SentenceTransformer
+
             self._model = SentenceTransformer(self._model_name)
             self._dims = self._model.get_sentence_embedding_dimension()
+            self._model_loaded = True
+
+            # Update health to ready
+            self.health = VectorHealth(
+                status=VectorStatus.READY,
+                embedding_model=self._model_name,
+                dimension=self._dims,
+            )
+            return True
+        except Exception as e:
+            self.health = VectorHealth(
+                status=VectorStatus.DEGRADED,
+                error=f"Embedding model failed: {e}",
+            )
+            logger.warning(f"Embedding model unavailable: {e}")
+            return False
+
+    @property
+    def model(self):
+        """Lazy-load the embedding model."""
+        if not self._model_loaded:
+            self._try_load_model()
         return self._model
 
     @property
@@ -33,23 +122,24 @@ class VectorIndex:
         """Get embedding dimensions (loads model if needed)."""
         if self._dims is None:
             _ = self.model  # Force load
-        return self._dims  # type: ignore
+        return self._dims or 384  # Default fallback
 
     @property
-    def conn(self) -> sqlite3.Connection:
+    def conn(self) -> sqlite3.Connection | None:
         """Lazy-load database connection."""
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.enable_load_extension(True)
-            sqlite_vec.load(self._conn)
-            self._conn.enable_load_extension(False)
+            if not self._try_load_extension():
+                return None
             self._init_tables()
         return self._conn
 
     def _init_tables(self):
         """Initialize database tables."""
+        if self._conn is None:
+            return
+
         # Vector table for similarity search
-        self.conn.execute(f"""
+        self._conn.execute(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS entity_vectors
             USING vec0(
                 entity_id TEXT PRIMARY KEY,
@@ -58,7 +148,7 @@ class VectorIndex:
         """)
 
         # Metadata table for filtering and deduplication
-        self.conn.execute("""
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS entity_meta (
                 entity_id TEXT PRIMARY KEY,
                 name TEXT,
@@ -66,7 +156,7 @@ class VectorIndex:
                 text_hash TEXT
             )
         """)
-        self.conn.commit()
+        self._conn.commit()
 
     def _entity_to_text(self, entity: Entity) -> str:
         """Convert entity to searchable text."""
@@ -75,42 +165,60 @@ class VectorIndex:
 
     def index_entity(self, entity: Entity) -> bool:
         """Add or update entity in vector index. Returns True if indexed."""
+        # Ensure connection is loaded
+        conn = self.conn
+        if conn is None:
+            return False
+
+        # Ensure model is loaded (updates health to READY on success)
+        model = self.model
+        if model is None:
+            return False
+
         text = self._entity_to_text(entity)
-        text_hash = str(hash(text))
+        text_hash = _stable_hash(text)  # Deterministic hash
 
         # Check if already indexed with same content
-        existing = self.conn.execute(
-            "SELECT text_hash FROM entity_meta WHERE entity_id = ?",
-            (entity.id,)
+        existing = conn.execute(
+            "SELECT text_hash FROM entity_meta WHERE entity_id = ?", (entity.id,)
         ).fetchone()
 
         if existing and existing[0] == text_hash:
             return False  # Already indexed, no change
 
-        # Generate embedding
-        embedding = self.model.encode(text).tolist()
+        # Generate embedding (model already validated above)
+        embedding = model.encode(text).tolist()
+
+        import sqlite_vec
 
         # Upsert vector (delete + insert for sqlite-vec)
-        self.conn.execute("DELETE FROM entity_vectors WHERE entity_id = ?", (entity.id,))
-        self.conn.execute(
+        conn.execute("DELETE FROM entity_vectors WHERE entity_id = ?", (entity.id,))
+        conn.execute(
             "INSERT INTO entity_vectors (entity_id, embedding) VALUES (?, ?)",
-            (entity.id, sqlite_vec.serialize_float32(embedding))
+            (entity.id, sqlite_vec.serialize_float32(embedding)),
         )
 
         # Upsert metadata
-        self.conn.execute("""
+        conn.execute(
+            """
             INSERT OR REPLACE INTO entity_meta (entity_id, name, type, text_hash)
             VALUES (?, ?, ?, ?)
-        """, (entity.id, entity.name, entity.type, text_hash))
+        """,
+            (entity.id, entity.name, entity.type, text_hash),
+        )
 
-        self.conn.commit()
+        conn.commit()
         return True
 
     def remove_entity(self, entity_id: str) -> None:
         """Remove entity from index."""
-        self.conn.execute("DELETE FROM entity_vectors WHERE entity_id = ?", (entity_id,))
-        self.conn.execute("DELETE FROM entity_meta WHERE entity_id = ?", (entity_id,))
-        self.conn.commit()
+        conn = self.conn
+        if conn is None:
+            return
+
+        conn.execute("DELETE FROM entity_vectors WHERE entity_id = ?", (entity_id,))
+        conn.execute("DELETE FROM entity_meta WHERE entity_id = ?", (entity_id,))
+        conn.commit()
 
     def reindex_all(self, entities: list[Entity]) -> int:
         """Reindex all entities. Returns count of indexed."""
@@ -121,29 +229,53 @@ class VectorIndex:
         return indexed
 
     def search(
-        self,
-        query: str,
-        limit: int = 10,
-        type_filter: str | None = None
+        self, query: str, limit: int = 10, type_filter: str | None = None
     ) -> list[tuple[str, float]]:
-        """Search for similar entities. Returns (entity_id, similarity_score) tuples."""
-        query_embedding = self.model.encode(query).tolist()
+        """Search for similar entities. Returns (entity_id, similarity_score) tuples.
+
+        Returns empty list if vector search is unavailable.
+        """
+        # Ensure connection and model are loaded (lazy init)
+        conn = self.conn
+        if conn is None:
+            logger.debug("Vector search unavailable: no database connection")
+            return []
+
+        # Trigger model loading (this updates health status)
+        model = self.model
+        if model is None:
+            logger.debug("Vector search unavailable: no embedding model")
+            return []
+
+        # Now check health after lazy loading
+        if self.health.status != VectorStatus.READY:
+            logger.debug(
+                f"Semantic search unavailable ({self.health.status.value}), returning empty"
+            )
+            return []
+
+        import sqlite_vec
+
+        query_embedding = model.encode(query).tolist()
         serialized = sqlite_vec.serialize_float32(query_embedding)
 
         if type_filter:
             # For filtered search, we need to search more and filter post-hoc
             # sqlite-vec requires k= in WHERE clause for KNN, JOINs complicate this
-            all_results = self.conn.execute("""
+            all_results = conn.execute(
+                """
                 SELECT entity_id, distance
                 FROM entity_vectors
                 WHERE embedding MATCH ? AND k = ?
                 ORDER BY distance
-            """, (serialized, limit * 5)).fetchall()  # Fetch more to filter
+            """,
+                (serialized, limit * 5),
+            ).fetchall()  # Fetch more to filter
 
             # Filter by type using metadata
             filtered = []
             for entity_id, distance in all_results:
-                meta = self.conn.execute(
+                meta = conn.execute(
                     "SELECT type FROM entity_meta WHERE entity_id = ?", (entity_id,)
                 ).fetchone()
                 if meta and meta[0] == type_filter:
@@ -152,12 +284,15 @@ class VectorIndex:
                         break
             results = filtered
         else:
-            results = self.conn.execute("""
+            results = conn.execute(
+                """
                 SELECT entity_id, distance
                 FROM entity_vectors
                 WHERE embedding MATCH ? AND k = ?
                 ORDER BY distance
-            """, (serialized, limit)).fetchall()
+            """,
+                (serialized, limit),
+            ).fetchall()
 
         # Convert distance to similarity (1 / (1 + distance))
         return [(r[0], 1.0 / (1.0 + r[1])) for r in results]

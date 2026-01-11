@@ -1,15 +1,19 @@
 """Memory engine - orchestrates event store, state, and operations."""
 
 import json
+import logging
 import subprocess
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 from .events import EventStore
 from .models import Entity, MemoryEvent, Observation, Relation
 from .state import GraphState, materialize, materialize_at, apply_event
 from .timeutil import parse_time_reference
+from .branches import BranchManager
 
 # --- Constants ---
 # Default limits for queries
@@ -308,6 +312,41 @@ def _get_git_root(memory_dir: Path) -> Path | None:
         return None
 
 
+def _validate_memory_repo(memory_dir: Path, git_root: Path | None) -> None:
+    """Ensure git root is the memory directory, not a parent repo.
+
+    This prevents accidentally running git commands in a parent repository
+    when the memory directory is nested inside another git repo.
+
+    Args:
+        memory_dir: The memory directory path
+        git_root: The detected git root (from git rev-parse --show-toplevel)
+
+    Raises:
+        ValueError: If git_root doesn't contain events.jsonl, indicating
+            the memory directory is nested in another git repository.
+    """
+    if not git_root:
+        return
+
+    events_path = git_root / "events.jsonl"
+    if not events_path.exists():
+        raise ValueError(
+            f"Git root {git_root} does not contain events.jsonl. "
+            f"Memory directory may be nested in another git repository. "
+            f"Initialize a separate git repo in {memory_dir} or "
+            f"move the memory directory outside the current repo."
+        )
+
+    # Optional: check for marker file
+    marker = git_root / ".mnemograph"
+    if not marker.exists():
+        logger.warning(
+            f"Memory repo missing .mnemograph marker. "
+            f"Consider running: touch {marker}"
+        )
+
+
 class MemoryEngine:
     """Main entry point for memory operations.
 
@@ -330,9 +369,30 @@ class MemoryEngine:
         self._co_access_cache_path = memory_dir / "co_access_cache.json"
         self._load_co_access_cache()
 
+        # Branch manager - provides filtered views of the graph
+        self._branch_manager: BranchManager | None = None
+
         # Check git repo status (warns if not in git)
         self._in_git_repo = _check_git_repo(memory_dir)
         self._git_root = _get_git_root(memory_dir) if self._in_git_repo else None
+
+        # Validate that git root is the memory directory, not a parent repo
+        _validate_memory_repo(memory_dir, self._git_root)
+
+    @property
+    def branch_manager(self) -> BranchManager:
+        """Lazy-load branch manager."""
+        if self._branch_manager is None:
+            self._branch_manager = BranchManager(self.memory_dir, lambda: self.state)
+        return self._branch_manager
+
+    def get_active_state(self) -> GraphState:
+        """Get state filtered to current branch.
+
+        On main branch, returns full state. On other branches, returns
+        filtered state containing only branch entities/relations.
+        """
+        return self.branch_manager.get_filtered_state()
 
     def _load_state(self) -> GraphState:
         """Load state from events."""
@@ -454,6 +514,40 @@ class MemoryEngine:
         apply_event(self.state, event)
         return event
 
+    # --- Branch auto-include helper ---
+
+    def _auto_include_in_branch(
+        self,
+        entity_ids: list[str] | None = None,
+        relation_ids: list[str] | None = None,
+    ) -> None:
+        """Auto-include newly created entities/relations in current branch.
+
+        On main branch, this is a no-op (main sees everything).
+        On other branches, adds the IDs to the branch's filter sets.
+        """
+        current_branch = self.branch_manager.current_branch_name()
+        if current_branch == "main":
+            return  # Main sees everything, no filtering needed
+
+        branch = self.branch_manager.current_branch()
+        modified = False
+
+        if entity_ids:
+            for eid in entity_ids:
+                if eid not in branch.entity_ids:
+                    branch.entity_ids.add(eid)
+                    modified = True
+
+        if relation_ids:
+            for rid in relation_ids:
+                if rid not in branch.relation_ids:
+                    branch.relation_ids.add(rid)
+                    modified = True
+
+        if modified:
+            self.branch_manager._save_branch(branch)
+
     # --- Entity operations ---
 
     def create_entities(
@@ -462,6 +556,9 @@ class MemoryEngine:
         force: bool = False,
     ) -> list[Entity | dict]:
         """Create multiple entities with auto-duplicate checking.
+
+        On non-main branches, newly created entities are automatically
+        included in the current branch.
 
         Args:
             entities: List of entity dicts to create
@@ -472,6 +569,7 @@ class MemoryEngine:
             Warning dicts have status="duplicate_warning" and include similar entities.
         """
         results: list[Entity | dict] = []
+        created_entity_ids: list[str] = []
 
         for entity_data in entities:
             name = entity_data["name"]
@@ -506,6 +604,13 @@ class MemoryEngine:
             )
             self._emit("create_entity", entity.model_dump(mode="json"))
             results.append(entity)
+            created_entity_ids.append(entity.id)
+            # Index new entity in vector store if index is loaded
+            self.ensure_indexed(entity.id)
+
+        # Auto-include in current branch (no-op on main)
+        if created_entity_ids:
+            self._auto_include_in_branch(entity_ids=created_entity_ids)
 
         return results
 
@@ -521,11 +626,17 @@ class MemoryEngine:
     def delete_entities(self, names: list[str]) -> int:
         """Delete entities by name. Returns count of deleted."""
         deleted = 0
+        deleted_ids: list[str] = []
         for name in names:
             entity_id = self._resolve_entity(name)
             if entity_id:
                 self._emit("delete_entity", {"id": entity_id})
                 deleted += 1
+                deleted_ids.append(entity_id)
+        # Remove deleted entities from vector index
+        if self._vector_index is not None:
+            for entity_id in deleted_ids:
+                self._vector_index.remove_entity(entity_id)
         return deleted
 
     # --- Relation operations ---
@@ -533,11 +644,15 @@ class MemoryEngine:
     def create_relations(self, relations: list[dict]) -> dict:
         """Create multiple relations with detailed result.
 
+        On non-main branches, newly created relations are automatically
+        included in the current branch.
+
         Returns dict with 'created' list, 'failed' list, and 'summary'.
         Failed items include reason for failure.
         """
         created = []
         failed = []
+        created_relation_ids: list[str] = []
 
         for rel_data in relations:
             from_name = rel_data["from"]
@@ -570,6 +685,11 @@ class MemoryEngine:
             )
             self._emit("create_relation", relation.model_dump(mode="json"))
             created.append(relation)
+            created_relation_ids.append(relation.id)
+
+        # Auto-include in current branch (no-op on main)
+        if created_relation_ids:
+            self._auto_include_in_branch(relation_ids=created_relation_ids)
 
         return {
             "created": [r.model_dump(mode="json") for r in created],
@@ -612,11 +732,14 @@ class MemoryEngine:
                     )
                     added.append(content)
                 results.append({"entityName": obs_data["entityName"], "addedObservations": added})
+                # Re-index entity after adding observations (text changed)
+                self.ensure_indexed(entity_id)
         return results
 
     def delete_observations(self, deletions: list[dict]) -> int:
         """Delete specific observations from entities."""
         deleted = 0
+        entities_modified: set[str] = set()
         for deletion in deletions:
             entity_id = self._resolve_entity(deletion["entityName"])
             if entity_id and entity_id in self.state.entities:
@@ -630,16 +753,25 @@ class MemoryEngine:
                                 {"entity_id": entity_id, "observation_id": obs.id},
                             )
                             deleted += 1
+                            entities_modified.add(entity_id)
                             break
+        # Re-index modified entities (text changed)
+        for entity_id in entities_modified:
+            self.ensure_indexed(entity_id)
         return deleted
 
     # --- Query operations ---
 
     def read_graph(self) -> dict:
-        """Return full graph state."""
+        """Return full graph state for current branch.
+
+        On main branch, returns everything. On other branches, returns
+        only entities and relations belonging to that branch.
+        """
+        active_state = self.get_active_state()
         return {
-            "entities": [e.model_dump(mode="json") for e in self.state.entities.values()],
-            "relations": [r.model_dump(mode="json") for r in self.state.relations],
+            "entities": [e.model_dump(mode="json") for e in active_state.entities.values()],
+            "relations": [r.model_dump(mode="json") for r in active_state.relations],
         }
 
     def get_structure(
@@ -652,6 +784,8 @@ class MemoryEngine:
         This is the lightweight alternative to search_graph/read_graph for initial
         exploration. Returns ~10x fewer tokens than full data.
 
+        Uses branch-filtered state on non-main branches.
+
         Args:
             entity_ids: Specific entity IDs to include (None = all)
             include_neighbors: If True, include 1-hop neighbors of specified entities
@@ -659,25 +793,30 @@ class MemoryEngine:
         Returns:
             Dict with 'entities' (summaries) and 'relations' (summaries)
         """
+        active_state = self.get_active_state()
+
         if entity_ids is None:
-            # All entities
-            target_ids = set(self.state.entities.keys())
+            # All entities in active state
+            target_ids = set(active_state.entities.keys())
         else:
-            target_ids = set(entity_ids)
+            # Filter to entities visible in active state
+            target_ids = {eid for eid in entity_ids if eid in active_state.entities}
 
             if include_neighbors:
-                # Add 1-hop neighbors
+                # Add 1-hop neighbors (within active state)
                 for eid in list(target_ids):
-                    for rel in self.state.get_outgoing_relations(eid):
-                        target_ids.add(rel.to_entity)
-                    for rel in self.state.get_incoming_relations(eid):
-                        target_ids.add(rel.from_entity)
+                    for rel in active_state.get_outgoing_relations(eid):
+                        if rel.to_entity in active_state.entities:
+                            target_ids.add(rel.to_entity)
+                    for rel in active_state.get_incoming_relations(eid):
+                        if rel.from_entity in active_state.entities:
+                            target_ids.add(rel.from_entity)
 
         # Build lightweight entity summaries
         entities = []
         for eid in target_ids:
-            if eid in self.state.entities:
-                entity = self.state.entities[eid]
+            if eid in active_state.entities:
+                entity = active_state.entities[eid]
                 entities.append({
                     "id": entity.id,
                     "name": entity.name,
@@ -687,10 +826,10 @@ class MemoryEngine:
 
         # Build relation summaries
         relations = []
-        for rel in self.state.relations:
+        for rel in active_state.relations:
             if rel.from_entity in target_ids or rel.to_entity in target_ids:
-                from_entity = self.state.entities.get(rel.from_entity)
-                to_entity = self.state.entities.get(rel.to_entity)
+                from_entity = active_state.entities.get(rel.from_entity)
+                to_entity = active_state.entities.get(rel.to_entity)
                 relations.append({
                     "from": from_entity.name if from_entity else rel.from_entity,
                     "to": to_entity.name if to_entity else rel.to_entity,
@@ -711,6 +850,8 @@ class MemoryEngine:
         Combines text and semantic search, returns lightweight summaries.
         Use open_nodes() to get full data for specific entities.
 
+        Uses branch-filtered state on non-main branches.
+
         Args:
             query: Search query
             limit: Max entities to return
@@ -718,12 +859,13 @@ class MemoryEngine:
         Returns:
             Structure with matched entities, their relations, and token estimate
         """
+        active_state = self.get_active_state()
         query_lower = query.lower()
         matched_ids: list[str] = []
         scores: dict[str, float] = {}
 
-        # 1. Text search (exact matches score higher)
-        for entity in self.state.entities.values():
+        # 1. Text search (exact matches score higher) - within active state
+        for entity in active_state.entities.values():
             score = 0.0
 
             # Name match (highest)
@@ -743,20 +885,21 @@ class MemoryEngine:
                 matched_ids.append(entity.id)
                 scores[entity.id] = score
 
-        # 2. Semantic search (adds more candidates)
-        if self._vector_index is not None:
-            try:
-                vector_results = self.vector_index.search(query, limit=limit)
-                for eid, vscore in vector_results:
-                    if eid in self.state.entities:
-                        if eid not in scores:
-                            matched_ids.append(eid)
-                            scores[eid] = vscore * 0.8  # Weight semantic slightly lower
-                        else:
-                            # Boost score if found by both methods
-                            scores[eid] = min(1.0, scores[eid] + vscore * 0.2)
-            except Exception:
-                pass
+        # 2. Semantic search (adds more candidates) - filter to active state
+        # Uses lazy-loaded vector_index which gracefully returns [] if unavailable
+        try:
+            vector_results = self.vector_index.search(query, limit=limit)
+            for eid, vscore in vector_results:
+                # Only include if entity is in active state (branch-filtered)
+                if eid in active_state.entities:
+                    if eid not in scores:
+                        matched_ids.append(eid)
+                        scores[eid] = vscore * 0.8  # Weight semantic slightly lower
+                    else:
+                        # Boost score if found by both methods
+                        scores[eid] = min(1.0, scores[eid] + vscore * 0.2)
+        except Exception as e:
+            logger.debug(f"Semantic search failed (continuing with keyword results): {e}")
 
         # Sort by score and limit
         matched_ids.sort(key=lambda x: scores.get(x, 0), reverse=True)
@@ -767,9 +910,9 @@ class MemoryEngine:
 
         # Estimate tokens for full data
         total_obs = sum(
-            len(self.state.entities[eid].observations)
+            len(active_state.entities[eid].observations)
             for eid in matched_ids
-            if eid in self.state.entities
+            if eid in active_state.entities
         )
         estimated_full_tokens = total_obs * 50  # ~50 tokens per observation avg
 
@@ -783,12 +926,16 @@ class MemoryEngine:
         }
 
     def search_graph(self, query: str) -> dict:
-        """Search entities by text across names, types, observations."""
+        """Search entities by text across names, types, observations.
+
+        Uses branch-filtered state on non-main branches.
+        """
+        active_state = self.get_active_state()
         query_lower = query.lower()
         matching_entities = []
         matching_entity_ids = set()
 
-        for entity in self.state.entities.values():
+        for entity in active_state.entities.values():
             matched = False
             if query_lower in entity.name.lower():
                 matched = True
@@ -806,9 +953,9 @@ class MemoryEngine:
         # Track access for matched entities
         self._track_access(list(matching_entity_ids))
 
-        # Include relations between matching entities
+        # Include relations between matching entities (within active state)
         matching_relations = [
-            r for r in self.state.relations
+            r for r in active_state.relations
             if r.from_entity in matching_entity_ids or r.to_entity in matching_entity_ids
         ]
 
@@ -818,36 +965,42 @@ class MemoryEngine:
         }
 
     def open_nodes(self, names: list[str]) -> dict:
-        """Get specific entities by name, their relations, and neighbors."""
+        """Get specific entities by name, their relations, and neighbors.
+
+        Uses branch-filtered state on non-main branches. Only returns
+        entities/relations visible on the current branch.
+        """
+        active_state = self.get_active_state()
         entities = []
         entity_ids = set()
 
         for name in names:
             entity_id = self._resolve_entity(name)
-            if entity_id and entity_id in self.state.entities:
-                entities.append(self.state.entities[entity_id])
+            # Only include if entity is in active state (branch-filtered)
+            if entity_id and entity_id in active_state.entities:
+                entities.append(active_state.entities[entity_id])
                 entity_ids.add(entity_id)
 
         # Track access
         self._track_access(list(entity_ids))
 
-        # Include relations involving these entities
+        # Include relations involving these entities (within active state)
         relations = [
-            r for r in self.state.relations
+            r for r in active_state.relations
             if r.from_entity in entity_ids or r.to_entity in entity_ids
         ]
 
-        # Find neighbor IDs (entities connected via relations)
+        # Find neighbor IDs (entities connected via relations, within active state)
         neighbor_ids = set()
         for r in relations:
-            if r.from_entity not in entity_ids:
+            if r.from_entity not in entity_ids and r.from_entity in active_state.entities:
                 neighbor_ids.add(r.from_entity)
-            if r.to_entity not in entity_ids:
+            if r.to_entity not in entity_ids and r.to_entity in active_state.entities:
                 neighbor_ids.add(r.to_entity)
 
         neighbors = [
-            self.state.entities[nid] for nid in neighbor_ids
-            if nid in self.state.entities
+            active_state.entities[nid] for nid in neighbor_ids
+            if nid in active_state.entities
         ]
 
         return {
@@ -878,38 +1031,54 @@ class MemoryEngine:
     # --- Phase 2: Richer queries ---
 
     def get_recent_entities(self, limit: int = DEFAULT_QUERY_LIMIT) -> list[Entity]:
-        """Get most recently updated entities."""
+        """Get most recently updated entities.
+
+        Uses branch-filtered state on non-main branches.
+        """
+        active_state = self.get_active_state()
         return sorted(
-            self.state.entities.values(),
+            active_state.entities.values(),
             key=lambda e: e.updated_at,
             reverse=True,
         )[:limit]
 
     def get_hot_entities(self, limit: int = DEFAULT_QUERY_LIMIT) -> list[Entity]:
-        """Get most frequently accessed entities."""
+        """Get most frequently accessed entities.
+
+        Uses branch-filtered state on non-main branches.
+        """
+        active_state = self.get_active_state()
         return sorted(
-            self.state.entities.values(),
+            active_state.entities.values(),
             key=lambda e: e.access_count,
             reverse=True,
         )[:limit]
 
     def get_entities_by_type(self, entity_type: str) -> list[Entity]:
-        """Filter entities by type."""
-        return [e for e in self.state.entities.values() if e.type == entity_type]
+        """Filter entities by type.
+
+        Uses branch-filtered state on non-main branches.
+        """
+        active_state = self.get_active_state()
+        return [e for e in active_state.entities.values() if e.type == entity_type]
 
     def get_entity_neighbors(self, entity_id: str, include_entity: bool = True) -> dict:
-        """Get entity and its directly connected neighbors via relations."""
-        entity = self.state.entities.get(entity_id)
+        """Get entity and its directly connected neighbors via relations.
+
+        Uses branch-filtered state on non-main branches.
+        """
+        active_state = self.get_active_state()
+        entity = active_state.entities.get(entity_id)
         if not entity:
             return {"entity": None, "neighbors": [], "outgoing": [], "incoming": []}
 
-        outgoing = [r for r in self.state.relations if r.from_entity == entity_id]
-        incoming = [r for r in self.state.relations if r.to_entity == entity_id]
+        outgoing = [r for r in active_state.relations if r.from_entity == entity_id]
+        incoming = [r for r in active_state.relations if r.to_entity == entity_id]
 
         neighbor_ids = set(
             [r.to_entity for r in outgoing] + [r.from_entity for r in incoming]
         )
-        neighbors = [self.state.entities[nid] for nid in neighbor_ids if nid in self.state.entities]
+        neighbors = [active_state.entities[nid] for nid in neighbor_ids if nid in active_state.entities]
 
         # Track access
         accessed = [entity_id] + list(neighbor_ids)
@@ -940,14 +1109,20 @@ class MemoryEngine:
         limit: int = DEFAULT_QUERY_LIMIT,
         type_filter: str | None = None
     ) -> dict:
-        """Semantic search using embeddings."""
+        """Semantic search using embeddings.
+
+        Uses branch-filtered state on non-main branches. Vector search
+        returns all candidates, but results are filtered to current branch.
+        """
+        active_state = self.get_active_state()
         results = self.vector_index.search(query, limit, type_filter)
 
         entities = []
         entity_ids = []
         for entity_id, score in results:
-            if entity_id in self.state.entities:
-                entity = self.state.entities[entity_id]
+            # Only include if entity is in active state (branch-filtered)
+            if entity_id in active_state.entities:
+                entity = active_state.entities[entity_id]
                 entity_dict = entity.model_dump(mode="json")
                 entity_dict["_score"] = score  # Attach similarity score
                 entities.append(entity_dict)
@@ -956,10 +1131,10 @@ class MemoryEngine:
         # Track access
         self._track_access(entity_ids)
 
-        # Include relations between matched entities
+        # Include relations between matched entities (within active state)
         entity_id_set = set(entity_ids)
         relations = [
-            r.model_dump(mode="json") for r in self.state.relations
+            r.model_dump(mode="json") for r in active_state.relations
             if r.from_entity in entity_id_set or r.to_entity in entity_id_set
         ]
 
@@ -981,6 +1156,7 @@ class MemoryEngine:
         query: str | None = None,
         focus: list[str] | None = None,
         max_tokens: int | None = None,
+        format: str = "prose",  # noqa: A002 - shadowing builtin is intentional for API
     ) -> dict:
         """Get memory context at varying depth levels.
 
@@ -992,23 +1168,45 @@ class MemoryEngine:
             query: Search query for medium/deep depth (uses semantic search)
             focus: Entity names to focus on
             max_tokens: Token budget (defaults vary by depth)
+            format: 'prose' (human-readable, default) or 'graph' (JSON structure)
 
         Returns:
             Dict with depth, tokens_estimate, content, entity_count, relation_count
             For medium/deep: may include 'structure_only' flag if results too large
+            For format='prose': content is human-readable prose
+            For format='graph': content is JSON-serializable structure
         """
         from .retrieval import get_shallow_context, get_medium_context, get_deep_context
+        from .linearize import linearize_to_prose, linearize_shallow_summary
+
+        # Use branch-filtered state for all retrieval
+        active_state = self.get_active_state()
 
         if depth == "shallow":
             tokens = max_tokens or SHALLOW_CONTEXT_TOKENS
-            result = get_shallow_context(self.state, tokens)
-            return {
-                "depth": result.depth,
-                "tokens_estimate": result.tokens_estimate,
-                "content": result.content,
-                "entity_count": result.entity_count,
-                "relation_count": result.relation_count,
-            }
+
+            if format == "prose":
+                # Use prose linearization for shallow
+                content = linearize_shallow_summary(active_state)
+                return {
+                    "depth": "shallow",
+                    "format": "prose",
+                    "tokens_estimate": len(content) // 4,
+                    "content": content,
+                    "entity_count": len(active_state.entities),
+                    "relation_count": len(active_state.relations),
+                }
+            else:
+                # Graph format — return the old markdown format
+                result = get_shallow_context(active_state, tokens)
+                return {
+                    "depth": result.depth,
+                    "format": "graph",
+                    "tokens_estimate": result.tokens_estimate,
+                    "content": result.content,
+                    "entity_count": result.entity_count,
+                    "relation_count": result.relation_count,
+                }
 
         elif depth == "medium":
             tokens = max_tokens or MEDIUM_CONTEXT_TOKENS
@@ -1023,6 +1221,7 @@ class MemoryEngine:
                     self.save_co_access_cache()
                     return {
                         "depth": "medium",
+                        "format": format,
                         "structure_only": True,
                         "reason": f"Full results would be ~{estimated_tokens} tokens (budget: {tokens})",
                         "matched_count": structure_result["matched_count"],
@@ -1037,8 +1236,11 @@ class MemoryEngine:
             vector_results = None
             if query:
                 vector_results = self.vector_index.search(query, limit=DEFAULT_QUERY_LIMIT)
-            result = get_medium_context(self.state, vector_results, focus, tokens)
+            result = get_medium_context(active_state, vector_results, focus, tokens)
             self.save_co_access_cache()
+
+            # Collect entity IDs from result for prose linearization
+            matched_entity_ids = self._collect_entity_ids_from_context(result, active_state)
 
         elif depth == "deep":
             tokens = max_tokens or DEEP_CONTEXT_TOKENS
@@ -1049,9 +1251,9 @@ class MemoryEngine:
                 focus_ids = [fid for fid in focus_ids if fid]
                 structure = self.get_structure(focus_ids, include_neighbors=True)
                 total_obs = sum(
-                    len(self.state.entities[eid].observations)
+                    len(active_state.entities[eid].observations)
                     for eid in focus_ids
-                    if eid in self.state.entities
+                    if eid in active_state.entities
                 )
                 estimated_tokens = total_obs * 50
 
@@ -1059,6 +1261,7 @@ class MemoryEngine:
                     self.save_co_access_cache()
                     return {
                         "depth": "deep",
+                        "format": format,
                         "structure_only": True,
                         "reason": f"Full results would be ~{estimated_tokens} tokens (budget: {tokens})",
                         "content": self._format_structure(structure),
@@ -1068,19 +1271,68 @@ class MemoryEngine:
                         "hint": "Use open_nodes(['entity1', 'entity2']) to get full data for specific entities",
                     }
 
-            result = get_deep_context(self.state, focus, tokens)
+            result = get_deep_context(active_state, focus, tokens)
             self.save_co_access_cache()
+
+            # Collect entity IDs from result for prose linearization
+            matched_entity_ids = self._collect_entity_ids_from_context(result, active_state)
 
         else:
             raise ValueError(f"Invalid depth: {depth}. Use 'shallow', 'medium', or 'deep'.")
 
-        return {
-            "depth": result.depth,
-            "tokens_estimate": result.tokens_estimate,
-            "content": result.content,
-            "entity_count": result.entity_count,
-            "relation_count": result.relation_count,
-        }
+        # Format output based on requested format
+        if format == "prose":
+            # Get entities and linearize to prose
+            entities = [
+                active_state.entities[eid]
+                for eid in matched_entity_ids
+                if eid in active_state.entities
+            ]
+            content = linearize_to_prose(active_state, entities, matched_entity_ids, depth)
+            return {
+                "depth": result.depth,
+                "format": "prose",
+                "tokens_estimate": len(content) // 4,
+                "content": content,
+                "entity_count": result.entity_count,
+                "relation_count": result.relation_count,
+            }
+        else:
+            # Graph format — return the existing markdown
+            return {
+                "depth": result.depth,
+                "format": "graph",
+                "tokens_estimate": result.tokens_estimate,
+                "content": result.content,
+                "entity_count": result.entity_count,
+                "relation_count": result.relation_count,
+            }
+
+    def _collect_entity_ids_from_context(self, result, active_state) -> set[str]:
+        """Extract entity IDs that were included in a context result.
+
+        This parses the result content to find entity names and map them back to IDs.
+        """
+        entity_ids: set[str] = set()
+
+        # The result.content is markdown with ### EntityName headers
+        # We need to extract these names and map to IDs
+        for line in result.content.split("\n"):
+            if line.startswith("### "):
+                # Parse "### EntityName (type)"
+                header = line[4:].strip()
+                if " (" in header:
+                    name = header.rsplit(" (", 1)[0]
+                else:
+                    name = header
+
+                # Find entity by name
+                for eid, entity in active_state.entities.items():
+                    if entity.name == name:
+                        entity_ids.add(eid)
+                        break
+
+        return entity_ids
 
     def _format_structure(self, structure: dict) -> str:
         """Format structure-only results as readable markdown."""
@@ -1476,11 +1728,22 @@ class MemoryEngine:
             for e in recent
         ]
 
+        # Vector search status
+        vector_status = None
+        if self._vector_index:
+            vector_status = {
+                "status": self._vector_index.health.status.value,
+                "error": self._vector_index.health.error,
+                "model": self._vector_index.health.embedding_model,
+                "dimension": self._vector_index.health.dimension,
+            }
+
         return {
             "status": {
                 "entity_count": len(self.state.entities),
                 "relation_count": len(self.state.relations),
                 "types": type_counts,
+                "vector_search": vector_status,
             },
             "recent_activity": recent_summary,
             "tools": {
@@ -1898,17 +2161,16 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
             suffix_match = name_lower.endswith(entity_lower) or entity_lower.endswith(name_lower)
             affix_bonus = AFFIX_MATCH_BONUS if (prefix_match or suffix_match) else 0
 
-            # 4. Embedding similarity (if vector index available)
+            # 4. Embedding similarity (uses lazy-loaded vector_index)
             embedding_sim = 0.0
-            if self._vector_index is not None:
-                try:
-                    search_results = self.vector_index.search(name, limit=DEFAULT_VECTOR_SEARCH_LIMIT)
-                    for result_id, score in search_results:
-                        if result_id == eid:
-                            embedding_sim = score
-                            break
-                except Exception:
-                    pass
+            try:
+                search_results = self.vector_index.search(name, limit=DEFAULT_VECTOR_SEARCH_LIMIT)
+                for result_id, score in search_results:
+                    if result_id == eid:
+                        embedding_sim = score
+                        break
+            except Exception as e:
+                logger.debug(f"Embedding similarity lookup failed (using text-based only): {e}")
 
             # Combined score - use max of different approaches
             # This handles different cases well:
@@ -2248,30 +2510,29 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
 
         suggestions = []
 
-        # 1. Semantic similarity via vector search
-        if self._vector_index is not None:
-            try:
-                entity_text = f"{entity_obj.name} {' '.join(o.text for o in entity_obj.observations)}"
-                search_results = self.vector_index.search(entity_text, limit=DEFAULT_VECTOR_SEARCH_LIMIT)
+        # 1. Semantic similarity via vector search (uses lazy-loaded vector_index)
+        try:
+            entity_text = f"{entity_obj.name} {' '.join(o.text for o in entity_obj.observations)}"
+            search_results = self.vector_index.search(entity_text, limit=DEFAULT_VECTOR_SEARCH_LIMIT)
 
-                for result_id, score in search_results:
-                    if result_id == entity_id or result_id in existing_targets:
-                        continue
-                    if result_id not in self.state.entities:
-                        continue
+            for result_id, score in search_results:
+                if result_id == entity_id or result_id in existing_targets:
+                    continue
+                if result_id not in self.state.entities:
+                    continue
 
-                    other = self.state.entities[result_id]
-                    if score > SUGGEST_RELATION_CONFIDENCE_THRESHOLD:
-                        rel_type = self._guess_relation_type(entity_obj, other)
-                        suggestions.append({
-                            "target": other.name,
-                            "target_id": result_id,
-                            "suggested_relation": rel_type,
-                            "confidence": round(score, 2),
-                            "reason": "semantic similarity",
-                        })
-            except Exception:
-                pass
+                other = self.state.entities[result_id]
+                if score > SUGGEST_RELATION_CONFIDENCE_THRESHOLD:
+                    rel_type = self._guess_relation_type(entity_obj, other)
+                    suggestions.append({
+                        "target": other.name,
+                        "target_id": result_id,
+                        "suggested_relation": rel_type,
+                        "confidence": round(score, 2),
+                        "reason": "semantic similarity",
+                    })
+        except Exception as e:
+            logger.debug(f"Semantic relation suggestions unavailable: {e}")
 
         # 2. Co-occurrence in observations (entity name mentioned in other's observations)
         entity_text_lower = " ".join(o.text.lower() for o in entity_obj.observations)
@@ -2344,6 +2605,9 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
         This is the primary tool for storing new knowledge. It creates an entity
         with observations and relations together, preventing orphan entities.
 
+        On non-main branches, newly created entities and relations are
+        automatically included in the current branch.
+
         Args:
             name: Entity name
             entity_type: One of: concept, decision, project, pattern, question, learning, entity
@@ -2401,6 +2665,7 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
         # Create relations
         relations_created = 0
         relations_failed = []
+        created_relation_ids: list[str] = []
 
         for rel in relations:
             to_name = rel.get("to")
@@ -2427,6 +2692,13 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
             )
             self._emit("create_relation", relation.model_dump(mode="json"))
             relations_created += 1
+            created_relation_ids.append(relation.id)
+
+        # Auto-include in current branch (no-op on main)
+        self._auto_include_in_branch(
+            entity_ids=[entity.id],
+            relation_ids=created_relation_ids if created_relation_ids else None,
+        )
 
         result = {
             "status": "created",

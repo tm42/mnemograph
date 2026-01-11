@@ -221,3 +221,130 @@ def test_commit_auto_summary(initialized_vcs, temp_memory_dir):
     # Message should contain auto-generated summary
     assert "Added feature" in commits[0]["message"]
     assert "+1 entities" in commits[0]["message"] or "My Feature" in commits[0]["message"]
+
+
+# --- Git Safety Guard Tests ---
+
+
+def test_nested_repo_detection():
+    """Test that memory dir nested in another git repo raises error."""
+    import subprocess
+    from mnemograph.engine import MemoryEngine
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        parent_repo = Path(tmpdir)
+
+        # Initialize git in parent directory
+        subprocess.run(["git", "init"], cwd=parent_repo, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=parent_repo,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=parent_repo,
+            capture_output=True,
+        )
+
+        # Create nested memory directory (no events.jsonl at git root)
+        nested_memory_dir = parent_repo / "subdir" / ".claude" / "memory"
+        nested_memory_dir.mkdir(parents=True)
+
+        # Create events.jsonl in nested dir (but not at git root)
+        (nested_memory_dir / "events.jsonl").write_text("")
+
+        # Should raise ValueError because git root doesn't contain events.jsonl
+        with pytest.raises(ValueError, match="nested in another git repository"):
+            MemoryEngine(nested_memory_dir, "test-session")
+
+
+def test_proper_memory_repo_passes_validation():
+    """Test that memory dir at git root passes validation."""
+    import subprocess
+    from mnemograph.engine import MemoryEngine
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        memory_dir = Path(tmpdir)
+
+        # Initialize git in memory directory
+        subprocess.run(["git", "init"], cwd=memory_dir, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=memory_dir,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=memory_dir,
+            capture_output=True,
+        )
+
+        # Create events.jsonl at git root (proper setup)
+        (memory_dir / "events.jsonl").write_text("")
+
+        # Should not raise
+        engine = MemoryEngine(memory_dir, "test-session")
+        # Use resolve() to handle macOS /var -> /private/var symlink
+        assert engine._git_root.resolve() == memory_dir.resolve()
+
+
+def test_marker_file_warning(caplog):
+    """Test warning when .mnemograph marker is missing."""
+    import subprocess
+    import logging
+    from mnemograph.engine import MemoryEngine
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        memory_dir = Path(tmpdir)
+
+        # Initialize git with events.jsonl but no .mnemograph marker
+        subprocess.run(["git", "init"], cwd=memory_dir, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=memory_dir,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=memory_dir,
+            capture_output=True,
+        )
+        (memory_dir / "events.jsonl").write_text("")
+
+        # Should log warning about missing marker
+        with caplog.at_level(logging.WARNING, logger="mnemograph.engine"):
+            engine = MemoryEngine(memory_dir, "test-session")
+
+        assert "missing .mnemograph marker" in caplog.text
+
+
+def test_marker_file_no_warning_when_present(caplog):
+    """Test no warning when .mnemograph marker exists."""
+    import subprocess
+    import logging
+    from mnemograph.engine import MemoryEngine
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        memory_dir = Path(tmpdir)
+
+        # Initialize git with events.jsonl AND .mnemograph marker
+        subprocess.run(["git", "init"], cwd=memory_dir, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=memory_dir,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=memory_dir,
+            capture_output=True,
+        )
+        (memory_dir / "events.jsonl").write_text("")
+        (memory_dir / ".mnemograph").write_text("")
+
+        # Should not log warning
+        with caplog.at_level(logging.WARNING, logger="mnemograph.engine"):
+            engine = MemoryEngine(memory_dir, "test-session")
+
+        assert ".mnemograph marker" not in caplog.text

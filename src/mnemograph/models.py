@@ -153,3 +153,133 @@ class MemoryEvent(BaseModel):
     session_id: str
     source: Literal["cc", "user"] = "cc"
     data: dict  # operation-specific payload
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Branch System
+# ─────────────────────────────────────────────────────────────────────────────
+
+import re
+
+BRANCH_TYPES = ("project", "feature", "domain", "spike", "archive")
+BRANCH_NAME_PATTERN = re.compile(
+    r"^(project|feature|domain|spike|archive)/[a-z0-9][a-z0-9-]*[a-z0-9]$"
+)
+
+
+def validate_branch_name(name: str, strict: bool = False) -> tuple[bool, str | None]:
+    """Validate branch name against naming conventions.
+
+    Args:
+        name: Branch name to validate
+        strict: If True, require type prefix
+
+    Returns:
+        (is_valid, message) — message is error description or suggestion
+    """
+    # Reserved names
+    if name in ("main", "HEAD", ""):
+        return False, f"'{name}' is a reserved name"
+
+    # Check for invalid characters
+    if not re.match(r"^[a-z0-9/-]+$", name):
+        return False, "Use only lowercase letters, numbers, hyphens, and one slash"
+
+    # Has type prefix
+    if "/" in name:
+        if not BRANCH_NAME_PATTERN.match(name):
+            types = "|".join(BRANCH_TYPES)
+            return False, f"Invalid format. Use: <type>/<name> where type is {types}"
+        return True, None
+
+    # No type prefix
+    if strict:
+        return False, f"Missing type prefix. Suggested: project/{name}"
+    else:
+        # Warn but allow
+        return True, f"Consider using a type prefix: project/{name}"
+
+
+class Branch(BaseModel):
+    """A filtered view of the knowledge graph.
+
+    Branches are NOT forks of events — they're filters over the shared event log.
+    The 'main' branch sees all events; other branches see filtered subsets.
+    """
+
+    name: str  # e.g., "project/auth-service"
+    description: str = ""
+
+    # Filter: which entities/relations belong to this branch
+    entity_ids: set[str] = Field(default_factory=set)
+    relation_ids: set[str] = Field(default_factory=set)
+
+    # Lineage
+    parent: str | None = "main"  # Parent branch name (None for main)
+    created_at: datetime = Field(default_factory=utc_now)
+    created_from_commit: str | None = None  # Git commit hash when created
+
+    # State
+    is_active: bool = True  # False = archived
+
+    # Auto-include settings
+    auto_include_depth: int = 1  # When entity added, include N-hop neighbors
+
+    def includes_entity(self, entity_id: str) -> bool:
+        """Check if entity is visible on this branch."""
+        if self.name == "main":
+            return True  # Main sees everything
+        return entity_id in self.entity_ids
+
+    def includes_relation(self, relation_id: str) -> bool:
+        """Check if relation is visible on this branch."""
+        if self.name == "main":
+            return True  # Main sees everything
+        return relation_id in self.relation_ids
+
+    def to_dict(self) -> dict:
+        """Serialize for JSON storage."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "entity_ids": sorted(self.entity_ids),  # Sorted for deterministic output
+            "relation_ids": sorted(self.relation_ids),
+            "parent": self.parent,
+            "created_at": self.created_at.isoformat(),
+            "created_from_commit": self.created_from_commit,
+            "is_active": self.is_active,
+            "auto_include_depth": self.auto_include_depth,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Branch":
+        """Deserialize from JSON."""
+        created_at = data.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        elif created_at is None:
+            created_at = utc_now()
+
+        return cls(
+            name=data["name"],
+            description=data.get("description", ""),
+            entity_ids=set(data.get("entity_ids", [])),
+            relation_ids=set(data.get("relation_ids", [])),
+            parent=data.get("parent", "main"),
+            created_at=created_at,
+            created_from_commit=data.get("created_from_commit"),
+            is_active=data.get("is_active", True),
+            auto_include_depth=data.get("auto_include_depth", 1),
+        )
+
+
+def make_main_branch() -> Branch:
+    """Create the implicit main branch that sees everything."""
+    return Branch(
+        name="main",
+        description="All entities and relations",
+        entity_ids=set(),  # Empty = all (special case for main)
+        relation_ids=set(),
+        parent=None,
+        is_active=True,
+    )

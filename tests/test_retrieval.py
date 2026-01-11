@@ -19,7 +19,7 @@ def test_shallow_context_empty():
 
 
 def test_shallow_context_with_entities():
-    """Test shallow context returns summary."""
+    """Test shallow context returns summary (graph format)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
@@ -29,9 +29,10 @@ def test_shallow_context_with_entities():
             {"name": "Entity C", "entityType": "concept", "observations": ["Obs C"]},
         ])
 
-        result = engine.recall(depth="shallow")
+        result = engine.recall(depth="shallow", format="graph")
 
         assert result["depth"] == "shallow"
+        assert result["format"] == "graph"
         assert "3 entities" in result["content"]
         assert "Memory Summary" in result["content"]
         assert "concept: 2" in result["content"]
