@@ -6,12 +6,55 @@ from pathlib import Path
 
 from .events import EventStore
 from .models import Entity, MemoryEvent, Observation, Relation
-from .state import GraphState, materialize, materialize_at
+from .state import GraphState, materialize, materialize_at, apply_event
 from .timeutil import parse_time_reference
+
+# --- Constants ---
+# Default limits for queries
+DEFAULT_QUERY_LIMIT = 10
+DEFAULT_RECENT_LIMIT = 5
+DEFAULT_SUGGESTION_LIMIT = 5
+DEFAULT_VECTOR_SEARCH_LIMIT = 20
+
+# Token budgets for tiered retrieval
+SHALLOW_CONTEXT_TOKENS = 500
+MEDIUM_CONTEXT_TOKENS = 2000
+DEEP_CONTEXT_TOKENS = 5000
+
+# Similarity and weight thresholds
+DEFAULT_SIMILARITY_THRESHOLD = 0.7
+DUPLICATE_DETECTION_THRESHOLD = 0.8
+WEAK_RELATION_THRESHOLD = 0.2
+PRUNING_CANDIDATE_THRESHOLD = 0.1
+SUGGEST_RELATION_CONFIDENCE_THRESHOLD = 0.4
+
+# Health check limits
+OVERLOADED_ENTITY_OBSERVATION_LIMIT = 15
+HEALTH_REPORT_ITEM_LIMIT = 10
+
+# Suggestion confidence scores
+CO_OCCURRENCE_CONFIDENCE = 0.7
+SHARED_RELATION_CONFIDENCE = 0.65
+
+# Similarity calculation weights
+SUBSTRING_SIMILARITY_WEIGHT = 0.9
+TOKEN_SIMILARITY_WEIGHT = 0.8
+EMBEDDING_SIMILARITY_WEIGHT = 0.8
+AFFIX_MATCH_BONUS = 0.2
 
 
 class MemoryEngine:
-    """Main entry point for memory operations."""
+    """Main entry point for memory operations.
+
+    Thread-safety: MemoryEngine is designed for single-process use. Running
+    multiple instances with the same MEMORY_PATH may cause data corruption,
+    particularly in the co-access cache. For multi-process scenarios, use
+    separate memory directories or implement external locking.
+
+    Performance: Uses O(1) indices for entity lookups and incremental state
+    updates. Entity operations are O(1) regardless of graph size. Relation
+    operations are O(1) for creation, O(degree) for neighbor queries.
+    """
 
     def __init__(self, memory_dir: Path, session_id: str):
         self.memory_dir = memory_dir
@@ -65,7 +108,10 @@ class MemoryEngine:
         self._co_access_cache_path.write_text(json.dumps(cache, indent=2))
 
     def _emit(self, op: str, data: dict) -> MemoryEvent:
-        """Emit an event and update local state."""
+        """Emit an event and update local state incrementally.
+
+        Uses apply_event() for O(1) updates instead of full replay.
+        """
         event = MemoryEvent(
             op=op,  # type: ignore (we know op is valid EventOp)
             session_id=self.session_id,
@@ -73,8 +119,8 @@ class MemoryEngine:
             data=data,
         )
         self.event_store.append(event)
-        # Re-materialize (could optimize with incremental update later)
-        self.state = materialize(self.event_store.read_all())
+        # Incremental update - O(1) instead of O(events)
+        apply_event(self.state, event)
         return event
 
     # --- Entity operations ---
@@ -111,22 +157,52 @@ class MemoryEngine:
 
     # --- Relation operations ---
 
-    def create_relations(self, relations: list[dict]) -> list[Relation]:
-        """Create multiple relations."""
+    def create_relations(self, relations: list[dict]) -> dict:
+        """Create multiple relations with detailed result.
+
+        Returns dict with 'created' list, 'failed' list, and 'summary'.
+        Failed items include reason for failure.
+        """
         created = []
+        failed = []
+
         for rel_data in relations:
-            from_id = self._resolve_entity(rel_data["from"])
-            to_id = self._resolve_entity(rel_data["to"])
-            if from_id and to_id:
-                relation = Relation(
-                    from_entity=from_id,
-                    to_entity=to_id,
-                    type=rel_data["relationType"],
-                    created_by=self.session_id,
-                )
-                self._emit("create_relation", relation.model_dump(mode="json"))
-                created.append(relation)
-        return created
+            from_name = rel_data["from"]
+            to_name = rel_data["to"]
+            from_id = self._resolve_entity(from_name)
+            to_id = self._resolve_entity(to_name)
+
+            if not from_id:
+                failed.append({
+                    "from": from_name,
+                    "to": to_name,
+                    "relationType": rel_data.get("relationType", ""),
+                    "reason": f"from_entity not found: {from_name}",
+                })
+                continue
+            if not to_id:
+                failed.append({
+                    "from": from_name,
+                    "to": to_name,
+                    "relationType": rel_data.get("relationType", ""),
+                    "reason": f"to_entity not found: {to_name}",
+                })
+                continue
+
+            relation = Relation(
+                from_entity=from_id,
+                to_entity=to_id,
+                type=rel_data["relationType"],
+                created_by=self.session_id,
+            )
+            self._emit("create_relation", relation.model_dump(mode="json"))
+            created.append(relation)
+
+        return {
+            "created": [r.model_dump(mode="json") for r in created],
+            "failed": failed,
+            "summary": f"Created {len(created)}, failed {len(failed)}",
+        }
 
     def delete_relations(self, relations: list[dict]) -> int:
         """Delete relations. Returns count of deleted."""
@@ -270,13 +346,12 @@ class MemoryEngine:
     # --- Helpers ---
 
     def _resolve_entity(self, name_or_id: str) -> str | None:
-        """Find entity by name or ID."""
+        """Find entity by name or ID. O(1) lookup using indices."""
+        # Check if it's an ID
         if name_or_id in self.state.entities:
             return name_or_id
-        for entity in self.state.entities.values():
-            if entity.name == name_or_id:
-                return entity.id
-        return None
+        # Check name index
+        return self.state.get_entity_id_by_name(name_or_id)
 
     def _track_access(self, entity_ids: list[str]) -> None:
         """Update access counts for retrieved entities (in-memory only, not persisted)."""
@@ -289,7 +364,7 @@ class MemoryEngine:
 
     # --- Phase 2: Richer queries ---
 
-    def get_recent_entities(self, limit: int = 10) -> list[Entity]:
+    def get_recent_entities(self, limit: int = DEFAULT_QUERY_LIMIT) -> list[Entity]:
         """Get most recently updated entities."""
         return sorted(
             self.state.entities.values(),
@@ -297,7 +372,7 @@ class MemoryEngine:
             reverse=True,
         )[:limit]
 
-    def get_hot_entities(self, limit: int = 10) -> list[Entity]:
+    def get_hot_entities(self, limit: int = DEFAULT_QUERY_LIMIT) -> list[Entity]:
         """Get most frequently accessed entities."""
         return sorted(
             self.state.entities.values(),
@@ -349,7 +424,7 @@ class MemoryEngine:
     def search_semantic(
         self,
         query: str,
-        limit: int = 10,
+        limit: int = DEFAULT_QUERY_LIMIT,
         type_filter: str | None = None
     ) -> dict:
         """Semantic search using embeddings."""
@@ -408,21 +483,21 @@ class MemoryEngine:
         from .retrieval import get_shallow_context, get_medium_context, get_deep_context
 
         if depth == "shallow":
-            tokens = max_tokens or 500
+            tokens = max_tokens or SHALLOW_CONTEXT_TOKENS
             result = get_shallow_context(self.state, tokens)
 
         elif depth == "medium":
-            tokens = max_tokens or 2000
+            tokens = max_tokens or MEDIUM_CONTEXT_TOKENS
             # Get vector search results if query provided
             vector_results = None
             if query:
-                vector_results = self.vector_index.search(query, limit=10)
+                vector_results = self.vector_index.search(query, limit=DEFAULT_QUERY_LIMIT)
             result = get_medium_context(self.state, vector_results, focus, tokens)
             # Save co-access learning
             self.save_co_access_cache()
 
         elif depth == "deep":
-            tokens = max_tokens or 5000
+            tokens = max_tokens or DEEP_CONTEXT_TOKENS
             result = get_deep_context(self.state, focus, tokens)
             # Save co-access learning
             self.save_co_access_cache()
@@ -445,7 +520,7 @@ class MemoryEngine:
 
         Args:
             timestamp: ISO datetime string, relative reference ("7 days ago"),
-                       or datetime object
+                       or datetime object (will be treated as UTC if naive)
 
         Returns:
             GraphState as it existed at that timestamp
@@ -454,6 +529,9 @@ class MemoryEngine:
             ts = parse_time_reference(timestamp)
         else:
             ts = timestamp
+            # Ensure timezone-aware (assume UTC if naive)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
 
         events = self.event_store.read_all()
         return materialize_at(events, ts)
@@ -706,7 +784,7 @@ class MemoryEngine:
     def get_strongest_connections(
         self,
         entity_name: str,
-        limit: int = 10,
+        limit: int = DEFAULT_QUERY_LIMIT,
     ) -> list[dict]:
         """Get an entity's strongest connections by weight.
 
@@ -744,8 +822,8 @@ class MemoryEngine:
 
     def get_weak_relations(
         self,
-        max_weight: float = 0.1,
-        limit: int = 20,
+        max_weight: float = PRUNING_CANDIDATE_THRESHOLD,
+        limit: int = DEFAULT_VECTOR_SEARCH_LIMIT,
     ) -> list[dict]:
         """Get relations below a weight threshold (candidates for pruning).
 
@@ -787,7 +865,7 @@ class MemoryEngine:
             type_counts[entity.type] = type_counts.get(entity.type, 0) + 1
 
         # Get recent entities
-        recent = self.get_recent_entities(limit=5)
+        recent = self.get_recent_entities(limit=DEFAULT_RECENT_LIMIT)
         recent_summary = [
             {"name": e.name, "type": e.type}
             for e in recent
@@ -903,7 +981,7 @@ class MemoryEngine:
 
     # --- Graph Coherence Tools ---
 
-    def find_similar(self, name: str, threshold: float = 0.7) -> list[dict]:
+    def find_similar(self, name: str, threshold: float = DEFAULT_SIMILARITY_THRESHOLD) -> list[dict]:
         """Find entities with similar names (potential duplicates).
 
         Uses combination of:
@@ -948,13 +1026,13 @@ class MemoryEngine:
             # 3. Prefix/suffix matching bonus
             prefix_match = name_lower.startswith(entity_lower) or entity_lower.startswith(name_lower)
             suffix_match = name_lower.endswith(entity_lower) or entity_lower.endswith(name_lower)
-            affix_bonus = 0.2 if (prefix_match or suffix_match) else 0
+            affix_bonus = AFFIX_MATCH_BONUS if (prefix_match or suffix_match) else 0
 
             # 4. Embedding similarity (if vector index available)
             embedding_sim = 0.0
             if self._vector_index is not None:
                 try:
-                    search_results = self.vector_index.search(name, limit=20)
+                    search_results = self.vector_index.search(name, limit=DEFAULT_VECTOR_SEARCH_LIMIT)
                     for result_id, score in search_results:
                         if result_id == eid:
                             embedding_sim = score
@@ -968,9 +1046,9 @@ class MemoryEngine:
             # - "React Native" vs "React": jaccard + affix
             # - Completely different names: embedding_sim dominates
             similarity = max(
-                substring_score * 0.9 + affix_bonus,  # Substring-based
-                jaccard * 0.8 + affix_bonus,  # Token-based
-                embedding_sim * 0.8,  # Semantic-based
+                substring_score * SUBSTRING_SIMILARITY_WEIGHT + affix_bonus,  # Substring-based
+                jaccard * TOKEN_SIMILARITY_WEIGHT + affix_bonus,  # Token-based
+                embedding_sim * EMBEDDING_SIMILARITY_WEIGHT,  # Semantic-based
             )
 
             if similarity >= threshold:
@@ -987,19 +1065,14 @@ class MemoryEngine:
     def find_orphans(self) -> list[dict]:
         """Find entities with no relations (likely incomplete).
 
+        Uses the _connected_entities index for O(n) iteration without nested loops.
+
         Returns:
             List of orphan entities with metadata
         """
-        # Find entities that have relations
-        connected = set()
-        for rel in self.state.relations:
-            connected.add(rel.from_entity)
-            connected.add(rel.to_entity)
-
-        # Find orphans
         orphans = []
         for eid, entity in self.state.entities.items():
-            if eid not in connected:
+            if self.state.is_orphan(eid):
                 orphans.append({
                     "id": eid,
                     "name": entity.name,
@@ -1027,75 +1100,20 @@ class MemoryEngine:
         Returns:
             Result with merged entity details
         """
-        source_id = self._resolve_entity(source)
-        target_id = self._resolve_entity(target)
+        # Validate and resolve merge targets
+        validation = self._validate_merge_targets(source, target)
+        if "error" in validation:
+            return validation
 
-        if not source_id:
-            return {"error": f"Source entity not found: {source}"}
-        if not target_id:
-            return {"error": f"Target entity not found: {target}"}
-        if source_id == target_id:
-            return {"error": "Source and target are the same entity"}
-
+        source_id = validation["source_id"]
+        target_id = validation["target_id"]
         source_entity = self.state.entities[source_id]
         target_entity = self.state.entities[target_id]
 
-        # 1. Copy observations with merge prefix
-        observations_merged = 0
-        for obs in source_entity.observations:
-            merged_text = f"[Merged from {source_entity.name}] {obs.text}"
-            new_obs = Observation(text=merged_text, source=self.session_id)
-            self._emit(
-                "add_observation",
-                {"entity_id": target_id, "observation": new_obs.model_dump(mode="json")},
-            )
-            observations_merged += 1
+        # Perform merge operations
+        observations_merged = self._merge_observations(source_id, target_id)
+        relations_redirected = self._redirect_relations(source_id, target_id)
 
-        # 2. Redirect relations
-        relations_redirected = 0
-        relations_to_delete = []
-
-        for rel in self.state.relations:
-            if rel.from_entity == source_id:
-                # Don't create self-referencing relation
-                if rel.to_entity != target_id:
-                    # Create new relation from target
-                    new_rel = Relation(
-                        from_entity=target_id,
-                        to_entity=rel.to_entity,
-                        type=rel.type,
-                        created_by=self.session_id,
-                    )
-                    self._emit("create_relation", new_rel.model_dump(mode="json"))
-                    relations_redirected += 1
-                relations_to_delete.append(rel)
-
-            elif rel.to_entity == source_id:
-                # Don't create self-referencing relation
-                if rel.from_entity != target_id:
-                    # Create new relation to target
-                    new_rel = Relation(
-                        from_entity=rel.from_entity,
-                        to_entity=target_id,
-                        type=rel.type,
-                        created_by=self.session_id,
-                    )
-                    self._emit("create_relation", new_rel.model_dump(mode="json"))
-                    relations_redirected += 1
-                relations_to_delete.append(rel)
-
-        # Delete old relations
-        for rel in relations_to_delete:
-            self._emit(
-                "delete_relation",
-                {
-                    "from_entity": rel.from_entity,
-                    "to_entity": rel.to_entity,
-                    "type": rel.type,
-                },
-            )
-
-        # 3. Delete source entity
         if delete_source:
             self._emit("delete_entity", {"id": source_id})
 
@@ -1108,57 +1126,166 @@ class MemoryEngine:
             "source_deleted": delete_source,
         }
 
+    def _validate_merge_targets(self, source: str, target: str) -> dict:
+        """Validate that merge source and target exist and are different.
+
+        Returns:
+            On success: {"source_id": str, "target_id": str}
+            On failure: {"error": str}
+        """
+        source_id = self._resolve_entity(source)
+        target_id = self._resolve_entity(target)
+
+        if not source_id:
+            return {"error": f"Source entity not found: {source}"}
+        if not target_id:
+            return {"error": f"Target entity not found: {target}"}
+        if source_id == target_id:
+            return {"error": "Source and target are the same entity"}
+        return {"source_id": source_id, "target_id": target_id}
+
+    def _merge_observations(self, source_id: str, target_id: str) -> int:
+        """Copy observations from source to target with merge note."""
+        source_entity = self.state.entities[source_id]
+        count = 0
+        for obs in source_entity.observations:
+            merged_text = f"[Merged from {source_entity.name}] {obs.text}"
+            new_obs = Observation(text=merged_text, source=self.session_id)
+            self._emit(
+                "add_observation",
+                {"entity_id": target_id, "observation": new_obs.model_dump(mode="json")},
+            )
+            count += 1
+        return count
+
+    def _redirect_relations(self, source_id: str, target_id: str) -> int:
+        """Redirect relations from source to target."""
+        redirected = 0
+        relations_to_delete = []
+
+        for rel in self.state.relations:
+            if rel.from_entity == source_id:
+                if rel.to_entity != target_id:  # Avoid self-reference
+                    new_rel = Relation(
+                        from_entity=target_id,
+                        to_entity=rel.to_entity,
+                        type=rel.type,
+                        created_by=self.session_id,
+                    )
+                    self._emit("create_relation", new_rel.model_dump(mode="json"))
+                    redirected += 1
+                relations_to_delete.append(rel)
+
+            elif rel.to_entity == source_id:
+                if rel.from_entity != target_id:  # Avoid self-reference
+                    new_rel = Relation(
+                        from_entity=rel.from_entity,
+                        to_entity=target_id,
+                        type=rel.type,
+                        created_by=self.session_id,
+                    )
+                    self._emit("create_relation", new_rel.model_dump(mode="json"))
+                    redirected += 1
+                relations_to_delete.append(rel)
+
+        # Delete old relations
+        for rel in relations_to_delete:
+            self._emit(
+                "delete_relation",
+                {"from_entity": rel.from_entity, "to_entity": rel.to_entity, "type": rel.type},
+            )
+
+        return redirected
+
     def get_graph_health(self) -> dict:
         """Assess overall health of the knowledge graph.
 
         Returns:
             Health report with issues and recommendations
         """
-        # Find orphans
+        # Collect issues
         orphans = self.find_orphans()
+        duplicates = self._find_duplicate_groups()
+        overloaded = self._find_overloaded_entities()
+        weak_relations = self._find_weak_relations()
+        cluster_count = self._count_connected_components()
 
-        # Find potential duplicates (group similar entities)
+        # Generate recommendations
+        recommendations = self._generate_health_recommendations(
+            orphans, duplicates, overloaded, weak_relations, cluster_count
+        )
+
+        return {
+            "summary": {
+                "total_entities": len(self.state.entities),
+                "total_relations": len(self.state.relations),
+                "orphan_count": len(orphans),
+                "duplicate_groups": len(duplicates),
+                "overloaded_count": len(overloaded),
+                "weak_relation_count": len(weak_relations),
+                "cluster_count": cluster_count,
+            },
+            "issues": {
+                "orphans": orphans[:HEALTH_REPORT_ITEM_LIMIT],
+                "potential_duplicates": duplicates[:HEALTH_REPORT_ITEM_LIMIT],
+                "overloaded_entities": overloaded[:HEALTH_REPORT_ITEM_LIMIT],
+                "weak_relations": weak_relations[:HEALTH_REPORT_ITEM_LIMIT],
+            },
+            "recommendations": recommendations,
+        }
+
+    def _find_duplicate_groups(self, threshold: float = DUPLICATE_DETECTION_THRESHOLD) -> list[dict]:
+        """Find groups of similar entities that may be duplicates."""
         duplicates = []
-        seen_ids = set()
+        seen_ids: set[str] = set()
 
         for eid, entity in self.state.entities.items():
             if eid in seen_ids:
                 continue
 
-            similar = self.find_similar(entity.name, threshold=0.8)
+            similar = self.find_similar(entity.name, threshold=threshold)
             if similar:
-                group = {
+                duplicates.append({
                     "entity": entity.name,
                     "similar_to": [s["name"] for s in similar],
-                }
-                duplicates.append(group)
+                })
                 seen_ids.add(eid)
                 seen_ids.update(s["id"] for s in similar)
 
-        # Find overloaded entities (>15 observations)
-        overloaded = [
+        return duplicates
+
+    def _find_overloaded_entities(self, max_observations: int = OVERLOADED_ENTITY_OBSERVATION_LIMIT) -> list[dict]:
+        """Find entities with too many observations (may need splitting)."""
+        return [
             {"name": e.name, "observation_count": len(e.observations), "type": e.type}
             for e in self.state.entities.values()
-            if len(e.observations) > 15
+            if len(e.observations) > max_observations
         ]
 
-        # Find weak relations (low weight)
-        weak_relations = []
+    def _find_weak_relations(self, min_weight: float = WEAK_RELATION_THRESHOLD) -> list[dict]:
+        """Find relations with low weight (may be noise)."""
+        weak = []
         for rel in self.state.relations:
-            if rel.weight < 0.2:
+            if rel.weight < min_weight:
                 from_entity = self.state.entities.get(rel.from_entity)
                 to_entity = self.state.entities.get(rel.to_entity)
-                weak_relations.append({
+                weak.append({
                     "from": from_entity.name if from_entity else rel.from_entity,
                     "to": to_entity.name if to_entity else rel.to_entity,
                     "type": rel.type,
                     "weight": round(rel.weight, 2),
                 })
+        return weak
 
-        # Count connected components (clusters)
-        cluster_count = self._count_connected_components()
-
-        # Generate recommendations
+    def _generate_health_recommendations(
+        self,
+        orphans: list,
+        duplicates: list,
+        overloaded: list,
+        weak_relations: list,
+        cluster_count: int,
+    ) -> list[str]:
+        """Generate actionable recommendations based on detected issues."""
         recommendations = []
         if orphans:
             recommendations.append(
@@ -1182,40 +1309,18 @@ class MemoryEngine:
             )
         if not recommendations:
             recommendations.append("Graph looks healthy! Keep up the good knowledge hygiene.")
-
-        return {
-            "summary": {
-                "total_entities": len(self.state.entities),
-                "total_relations": len(self.state.relations),
-                "orphan_count": len(orphans),
-                "duplicate_groups": len(duplicates),
-                "overloaded_count": len(overloaded),
-                "weak_relation_count": len(weak_relations),
-                "cluster_count": cluster_count,
-            },
-            "issues": {
-                "orphans": orphans[:10],  # Top 10
-                "potential_duplicates": duplicates[:10],
-                "overloaded_entities": overloaded[:10],
-                "weak_relations": weak_relations[:10],
-            },
-            "recommendations": recommendations,
-        }
+        return recommendations
 
     def _count_connected_components(self) -> int:
-        """Count number of disconnected subgraphs."""
+        """Count number of disconnected subgraphs.
+
+        Uses relation indices for efficient neighbor lookup.
+        """
         if not self.state.entities:
             return 0
 
-        # Build adjacency list
-        adj: dict[str, set[str]] = {eid: set() for eid in self.state.entities}
-        for rel in self.state.relations:
-            if rel.from_entity in adj and rel.to_entity in adj:
-                adj[rel.from_entity].add(rel.to_entity)
-                adj[rel.to_entity].add(rel.from_entity)
-
-        # BFS to find components
-        visited = set()
+        # BFS to find components using relation indices
+        visited: set[str] = set()
         components = 0
 
         for start in self.state.entities:
@@ -1229,13 +1334,20 @@ class MemoryEngine:
                 if node in visited:
                     continue
                 visited.add(node)
-                queue.extend(n for n in adj[node] if n not in visited)
+
+                # Get neighbors from indices
+                for rel in self.state.get_outgoing_relations(node):
+                    if rel.to_entity not in visited:
+                        queue.append(rel.to_entity)
+                for rel in self.state.get_incoming_relations(node):
+                    if rel.from_entity not in visited:
+                        queue.append(rel.from_entity)
 
             components += 1
 
         return components
 
-    def suggest_relations(self, entity: str, limit: int = 5) -> list[dict]:
+    def suggest_relations(self, entity: str, limit: int = DEFAULT_SUGGESTION_LIMIT) -> list[dict]:
         """Suggest potential relations for an entity.
 
         Based on:
@@ -1270,7 +1382,7 @@ class MemoryEngine:
         if self._vector_index is not None:
             try:
                 entity_text = f"{entity_obj.name} {' '.join(o.text for o in entity_obj.observations)}"
-                search_results = self.vector_index.search(entity_text, limit=20)
+                search_results = self.vector_index.search(entity_text, limit=DEFAULT_VECTOR_SEARCH_LIMIT)
 
                 for result_id, score in search_results:
                     if result_id == entity_id or result_id in existing_targets:
@@ -1279,7 +1391,7 @@ class MemoryEngine:
                         continue
 
                     other = self.state.entities[result_id]
-                    if score > 0.4:
+                    if score > SUGGEST_RELATION_CONFIDENCE_THRESHOLD:
                         rel_type = self._guess_relation_type(entity_obj, other)
                         suggestions.append({
                             "target": other.name,
@@ -1304,7 +1416,7 @@ class MemoryEngine:
                     "target": other.name,
                     "target_id": oid,
                     "suggested_relation": "mentions",
-                    "confidence": 0.7,
+                    "confidence": CO_OCCURRENCE_CONFIDENCE,
                     "reason": f"'{other.name}' mentioned in observations",
                 })
 
@@ -1318,7 +1430,7 @@ class MemoryEngine:
                         "target": other.name,
                         "target_id": oid,
                         "suggested_relation": "mentioned_by",
-                        "confidence": 0.65,
+                        "confidence": SHARED_RELATION_CONFIDENCE,
                         "reason": f"mentioned in '{other.name}' observations",
                     })
 

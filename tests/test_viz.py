@@ -107,16 +107,17 @@ class TestExportGraphForViz:
                 {"name": "B", "entityType": "concept"},
                 {"name": "C", "entityType": "concept"},
             ])
-            relations = engine.create_relations([
+            result = engine.create_relations([
                 {"from": "A", "to": "B", "relationType": "relates_to"},
                 {"from": "B", "to": "C", "relationType": "relates_to"},
             ])
+            relations = result["created"]
 
             # Get IDs
             entity_ids = {e.id for e in entities}
             a_id = next(e.id for e in entities if e.name == "A")
             b_id = next(e.id for e in entities if e.name == "B")
-            ab_rel_id = next(r.id for r in relations if r.from_entity == a_id)
+            ab_rel_id = next(r["id"] for r in relations if r["from_entity"] == a_id)
 
             # Export with branch filter (only A and B on branch)
             output_path = export_graph_for_viz(
@@ -201,12 +202,13 @@ class TestExportGraphForViz:
                 {"name": "A", "entityType": "concept"},
                 {"name": "B", "entityType": "concept"},
             ])
-            relations = engine.create_relations([
+            result = engine.create_relations([
                 {"from": "A", "to": "B", "relationType": "connects"},
             ])
+            relations = result["created"]
 
             # Set a custom weight
-            engine.set_relation_importance(relations[0].id, 0.9)
+            engine.set_relation_importance(relations[0]["id"], 0.9)
 
             output_path = export_graph_for_viz(
                 state=engine.state,

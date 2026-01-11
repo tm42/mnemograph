@@ -545,8 +545,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "create_relations":
-            created = engine.create_relations(arguments["relations"])
-            result = [r.model_dump(mode="json") for r in created]
+            result = engine.create_relations(arguments["relations"])
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "add_observations":

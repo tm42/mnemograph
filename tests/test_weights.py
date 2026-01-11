@@ -292,6 +292,9 @@ class TestWeightedBFS:
             ),
         ]
 
+        # Rebuild indices after manually setting up the state
+        self.state._rebuild_indices()
+
     def test_prefers_high_weight_paths(self):
         """Should visit high-weight edges before low-weight."""
         result = weighted_bfs(["A"], self.state, max_depth=3, max_nodes=5)
@@ -385,6 +388,9 @@ class TestGetStrongestConnections:
                 explicit_weight=0.2, co_access_score=0.1, last_accessed=now - timedelta(days=30),
             ),
         ]
+
+        # Rebuild indices after manually setting up the state
+        self.state._rebuild_indices()
 
     def test_returns_sorted_by_weight(self):
         """Should return connections sorted by weight descending."""
