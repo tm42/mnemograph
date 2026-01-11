@@ -312,8 +312,8 @@ class MemoryEngine:
             "relations": [r.model_dump(mode="json") for r in self.state.relations],
         }
 
-    def search_nodes(self, query: str) -> dict:
-        """Simple text search across names, types, observations."""
+    def search_graph(self, query: str) -> dict:
+        """Search entities by text across names, types, observations."""
         query_lower = query.lower()
         matching_entities = []
         matching_entity_ids = set()
@@ -505,7 +505,7 @@ class MemoryEngine:
 
     # --- Phase 4: Tiered retrieval ---
 
-    def memory_context(
+    def recall(
         self,
         depth: str = "shallow",
         query: str | None = None,
@@ -923,14 +923,15 @@ class MemoryEngine:
             "recent_activity": recent_summary,
             "tools": {
                 "retrieval": [
-                    "memory_context(depth, query) - Get relevant context (shallow/medium/deep)",
-                    "search_nodes(query) - Text search across entities",
+                    "recall(depth, query) - Get relevant context (shallow/medium/deep)",
+                    "search_graph(query) - Text search across entities",
                     "search_semantic(query) - Meaning-based search with embeddings",
                     "open_nodes(names) - Get specific entities with relations",
                 ],
                 "creation": [
-                    "create_entities(entities) - Create new knowledge nodes",
-                    "add_observations(observations) - Add info to existing entities",
+                    "remember(name, type, observations, relations) - Store knowledge atomically",
+                    "create_entities(entities) - Batch entity creation",
+                    "add_observations(observations) - Add facts to existing entities",
                     "create_relations(relations) - Link entities together",
                 ],
                 "history": [
@@ -939,7 +940,7 @@ class MemoryEngine:
                     "get_entity_history(name) - Full changelog for an entity",
                 ],
             },
-            "quick_start": "Call memory_context(depth='shallow') for a summary, or search_semantic(query='...') to find relevant knowledge.",
+            "quick_start": "Call recall(depth='shallow') for a summary, or remember() to store new knowledge.",
         }
 
     def session_start(self, project_hint: str | None = None) -> dict:
@@ -949,10 +950,10 @@ class MemoryEngine:
             project_hint: Optional project name or path for context
 
         Returns:
-            Initial context to prime the session
+            Initial context to prime the session with quick_start guide
         """
         # Get shallow context for session priming
-        context_result = self.memory_context(depth="shallow")
+        context_result = self.recall(depth="shallow")
 
         # Find project entity if hint provided
         project_entity = None
@@ -960,6 +961,33 @@ class MemoryEngine:
             project_id = self._resolve_entity(project_hint)
             if project_id:
                 project_entity = self.state.entities.get(project_id)
+
+        quick_start = """DAILY USE:
+  recall(query, depth)             → get relevant context (shallow/medium/deep)
+  search_graph(query)              → find entities by text
+  remember(name, type, obs, rels)  → store new knowledge (entity + relations)
+  add_observations(entity, [...])  → add facts to existing entity
+
+BEFORE CREATING:
+  find_similar(name)               → check for duplicates (>80% blocks create)
+
+CLEANUP (run periodically):
+  get_graph_health()               → orphans, duplicates, overloaded entities
+  find_orphans()                   → entities with no relations
+  merge_entities(src, target)      → consolidate duplicates
+
+HISTORY (when needed):
+  get_state_at(timestamp)          → view graph at point in time
+  diff_timerange(start, end)       → what changed between times
+  get_entity_history(entity)       → changelog for one entity
+
+WEIGHTS (rarely):
+  get_relation_weight(id)          → see weight breakdown
+  set_relation_importance(id, 0-1) → boost/demote relation
+  get_strongest_connections(entity) → most important links
+  get_weak_relations()             → pruning candidates
+
+TIP: Start with recall() to see what's known, then remember() or add_observations()."""
 
         return {
             "session_id": self.session_id,
@@ -969,7 +997,7 @@ class MemoryEngine:
             },
             "context": context_result["content"],
             "project": project_entity.name if project_entity else None,
-            "tip": "Use memory_context(depth='medium', query='...') for specific topics.",
+            "quick_start": quick_start,
         }
 
     def session_end(self, summary: str | None = None) -> dict:
@@ -1527,3 +1555,113 @@ class MemoryEngine:
             ("project", "project"): "related_to",
         }
         return type_map.get((entity.type, other.type), "related_to")
+
+    # --- High-Level Knowledge Creation ---
+
+    def remember(
+        self,
+        name: str,
+        entity_type: str,
+        observations: list[str] | None = None,
+        relations: list[dict] | None = None,
+        force: bool = False,
+    ) -> dict:
+        """Store knowledge atomically — entity + observations + relations in one call.
+
+        This is the primary tool for storing new knowledge. It creates an entity
+        with observations and relations together, preventing orphan entities.
+
+        Args:
+            name: Entity name
+            entity_type: One of: concept, decision, project, pattern, question, learning, entity
+            observations: List of facts/observations about this entity
+            relations: List of relations FROM this entity: [{"to": "Target", "type": "uses"}, ...]
+            force: If True, bypass duplicate check
+
+        Returns:
+            On success: {"status": "created", "entity": {...}, "relations_created": N}
+            On duplicate warning: {"status": "duplicate_warning", "similar": [...], ...}
+
+        Example:
+            remember(
+                name="FastAPI",
+                entity_type="concept",
+                observations=["Async Python web framework", "Uses Pydantic for validation"],
+                relations=[
+                    {"to": "Python", "type": "uses"},
+                    {"to": "Pydantic", "type": "depends_on"}
+                ]
+            )
+        """
+        observations = observations or []
+        relations = relations or []
+
+        # Auto-duplicate check (unless force=True)
+        if not force:
+            similar = self.find_similar(name, threshold=DUPLICATE_AUTO_BLOCK_THRESHOLD)
+            if similar:
+                top = similar[0]
+                return {
+                    "status": "duplicate_warning",
+                    "name": name,
+                    "warning": f"Similar entity exists: '{top['name']}' ({top['similarity']:.0%} match)",
+                    "similar": similar,
+                    "suggestion": f"Use add_observations('{top['name']}', ...) to add facts to existing entity",
+                    "override": "Use remember(..., force=True) to create anyway",
+                }
+
+        # Create the entity
+        entity = Entity(
+            name=name,
+            type=entity_type,
+            observations=[
+                Observation(text=obs, source=self.session_id)
+                for obs in observations
+            ],
+            created_by=self.session_id,
+        )
+        self._emit("create_entity", entity.model_dump(mode="json"))
+
+        # Index in vector store if available
+        self.ensure_indexed(entity.id)
+
+        # Create relations
+        relations_created = 0
+        relations_failed = []
+
+        for rel in relations:
+            to_name = rel.get("to")
+            rel_type = rel.get("type", "related_to")
+
+            if not to_name:
+                relations_failed.append({"error": "Missing 'to' field", "relation": rel})
+                continue
+
+            to_id = self._resolve_entity(to_name)
+            if not to_id:
+                relations_failed.append({
+                    "error": f"Target entity not found: {to_name}",
+                    "relation": rel,
+                    "suggestion": f"Create '{to_name}' first, or use create_relations later",
+                })
+                continue
+
+            relation = Relation(
+                from_entity=entity.id,
+                to_entity=to_id,
+                type=rel_type,
+                created_by=self.session_id,
+            )
+            self._emit("create_relation", relation.model_dump(mode="json"))
+            relations_created += 1
+
+        result = {
+            "status": "created",
+            "entity": entity.model_dump(mode="json"),
+            "relations_created": relations_created,
+        }
+
+        if relations_failed:
+            result["relations_failed"] = relations_failed
+
+        return result

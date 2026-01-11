@@ -11,7 +11,7 @@ def test_shallow_context_empty():
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
-        result = engine.memory_context(depth="shallow")
+        result = engine.recall(depth="shallow")
 
         assert result["depth"] == "shallow"
         assert "No entities stored yet" in result["content"]
@@ -29,7 +29,7 @@ def test_shallow_context_with_entities():
             {"name": "Entity C", "entityType": "concept", "observations": ["Obs C"]},
         ])
 
-        result = engine.memory_context(depth="shallow")
+        result = engine.recall(depth="shallow")
 
         assert result["depth"] == "shallow"
         assert "3 entities" in result["content"]
@@ -55,7 +55,7 @@ def test_medium_context_with_focus():
             {"from": "Center", "to": "Right", "relationType": "links_to"},
         ])
 
-        result = engine.memory_context(depth="medium", focus=["Center"])
+        result = engine.recall(depth="medium", focus=["Center"])
 
         assert result["depth"] == "medium"
         assert "Center" in result["content"]
@@ -77,7 +77,7 @@ def test_medium_context_with_query():
              "observations": ["Italian pasta", "French cuisine"]},
         ])
 
-        result = engine.memory_context(depth="medium", query="artificial intelligence")
+        result = engine.recall(depth="medium", query="artificial intelligence")
 
         assert result["depth"] == "medium"
         # Should find ML via semantic search
@@ -103,7 +103,7 @@ def test_deep_context_multi_hop():
             {"from": "C", "to": "D", "relationType": "connects"},
         ])
 
-        result = engine.memory_context(depth="deep", focus=["A"])
+        result = engine.recall(depth="deep", focus=["A"])
 
         assert result["depth"] == "deep"
         # Should traverse multiple hops and find more entities
@@ -123,7 +123,7 @@ def test_context_token_budget():
             ])
 
         # Request with small token budget
-        result = engine.memory_context(depth="shallow", max_tokens=200)
+        result = engine.recall(depth="shallow", max_tokens=200)
 
         # Content should be truncated
         assert result["tokens_estimate"] <= 250  # Allow some slack
@@ -135,7 +135,7 @@ def test_invalid_depth():
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
         try:
-            engine.memory_context(depth="invalid")
+            engine.recall(depth="invalid")
             assert False, "Should have raised ValueError"
         except ValueError as e:
             assert "Invalid depth" in str(e)

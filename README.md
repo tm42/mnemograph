@@ -79,17 +79,23 @@ Mnemograph exposes these tools via MCP:
 
 | Tool | Description |
 |------|-------------|
-| `create_entities` | Create nodes: concepts, decisions, patterns, projects, questions, learnings |
+| `remember` | **Primary tool**: Store knowledge atomically (entity + observations + relations in one call) |
+| `recall` | Get relevant context: shallow (summary), medium (search+neighbors), deep (subgraph) |
+| `search_graph` | Text search across entity names and observations |
+| `search_semantic` | Vector similarity search (meaning-based) |
+| `create_entities` | Create entities (auto-blocks duplicates >80% match) |
 | `create_relations` | Link entities with typed edges (implements, uses, decided_for, etc.) |
 | `add_observations` | Add facts/notes to existing entities |
+| `open_nodes` | Get specific entities with their relations |
+| `read_graph` | Get the full knowledge graph |
 | `delete_entities` | Remove entities (cascades to relations) |
 | `delete_relations` | Remove specific relations |
 | `delete_observations` | Remove specific observations |
-| `read_graph` | Get the full knowledge graph |
-| `search_nodes` | Text search across names and observations |
-| `open_nodes` | Get specific entities with their relations |
-| `search_semantic` | Vector similarity search (meaning-based) |
-| `memory_context` | Tiered retrieval: shallow (summary), medium (search+neighbors), deep (subgraph) |
+| `find_similar` | Find entities with similar names (duplicate detection) |
+| `find_orphans` | Find entities with no relations |
+| `merge_entities` | Merge duplicate entities (consolidates observations, redirects relations) |
+| `get_graph_health` | Assess graph quality: orphans, duplicates, overloaded entities |
+| `suggest_relations` | Suggest potential relations based on semantic similarity |
 | `get_state_at` | Time travel: view graph state at any point in history |
 | `diff_timerange` | Show what changed between two points in time |
 | `get_entity_history` | Full changelog for a specific entity |
@@ -97,11 +103,6 @@ Mnemograph exposes these tools via MCP:
 | `set_relation_importance` | Set explicit importance weight (0.0-1.0) |
 | `get_strongest_connections` | Find entity's most important connections |
 | `get_weak_relations` | Find pruning candidates (low-weight relations) |
-| `find_similar` | Find entities with similar names (duplicate detection) |
-| `find_orphans` | Find entities with no relations |
-| `merge_entities` | Merge duplicate entities (consolidates observations, redirects relations) |
-| `get_graph_health` | Assess graph quality: orphans, duplicates, overloaded entities |
-| `suggest_relations` | Suggest potential relations based on semantic similarity |
 | `clear_graph` | Clear all entities/relations (event-sourced, can rewind) |
 | `create_entities_force` | Create entities bypassing duplicate check |
 
@@ -141,6 +142,16 @@ mg clear -y -m "reason"  # Clear without confirmation, record reason
 ```
 
 **Note**: Global options (`--global`, `--memory-path`) come *before* the subcommand.
+
+**Running from anywhere** (without activating the venv):
+
+```bash
+# Using uv (recommended)
+uv run --directory /path/to/mnemograph mg graph
+
+# Using uvx (if installed from PyPI)
+uvx mnemograph-cli status
+```
 
 **Graph Visualization** — Interactive D3.js viewer:
 

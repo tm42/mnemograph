@@ -16,7 +16,7 @@ def test_create_and_search():
             {"name": "JavaScript", "entityType": "concept", "observations": ["Another language"]},
         ])
 
-        results = engine.search_nodes("python")
+        results = engine.search_graph("python")
         assert len(results["entities"]) == 1
         assert results["entities"][0]["name"] == "Python"
 
@@ -35,11 +35,11 @@ def test_access_tracking():
         assert engine.state.entities[entity_id].access_count == 0
 
         # Search should increment access count
-        engine.search_nodes("test")
+        engine.search_graph("test")
         assert engine.state.entities[entity_id].access_count == 1
 
         # Search again
-        engine.search_nodes("test")
+        engine.search_graph("test")
         assert engine.state.entities[entity_id].access_count == 2
 
 
@@ -70,12 +70,12 @@ def test_get_hot_entities():
         ])
 
         # Access "Hot Topic" multiple times
-        engine.search_nodes("hot")
-        engine.search_nodes("hot")
-        engine.search_nodes("hot")
+        engine.search_graph("hot")
+        engine.search_graph("hot")
+        engine.search_graph("hot")
 
         # Access "Cold Topic" once
-        engine.search_nodes("cold")
+        engine.search_graph("cold")
 
         hot = engine.get_hot_entities(limit=2)
         assert hot[0].name == "Hot Topic"
@@ -183,7 +183,7 @@ def test_get_primer():
 
 
 def test_session_start():
-    """Test session_start returns context."""
+    """Test session_start returns context and quick_start guide."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
@@ -197,7 +197,9 @@ def test_session_start():
         assert result["session_id"] == "test-session"
         assert result["memory_summary"]["entity_count"] == 2
         assert "context" in result
-        assert "tip" in result
+        assert "quick_start" in result
+        assert "recall" in result["quick_start"]  # Verify guide mentions key tools
+        assert "remember" in result["quick_start"]
 
 
 def test_session_start_with_project_hint():
@@ -680,3 +682,183 @@ def test_create_entities_mixed_results():
         assert len(engine.state.entities) == 2
         names = {e.name for e in engine.state.entities.values()}
         assert names == {"React", "Angular"}
+
+
+# --- Remember (High-Level Knowledge Creation) Tests ---
+
+
+def test_remember_creates_entity_with_observations():
+    """Test remember creates entity with observations."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        result = engine.remember(
+            name="FastAPI",
+            entity_type="concept",
+            observations=["Async Python web framework", "Uses Pydantic for validation"],
+        )
+
+        assert result["status"] == "created"
+        assert result["entity"]["name"] == "FastAPI"
+        assert result["entity"]["type"] == "concept"
+        assert len(result["entity"]["observations"]) == 2
+
+        # Verify entity exists in state
+        assert len(engine.state.entities) == 1
+        entity = list(engine.state.entities.values())[0]
+        assert entity.name == "FastAPI"
+
+
+def test_remember_creates_entity_with_relations():
+    """Test remember creates entity and relations atomically."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # First create target entities
+        engine.create_entities([
+            {"name": "Python", "entityType": "concept"},
+            {"name": "Pydantic", "entityType": "concept"},
+        ])
+
+        # Now remember with relations
+        result = engine.remember(
+            name="FastAPI",
+            entity_type="concept",
+            observations=["Async Python web framework"],
+            relations=[
+                {"to": "Python", "type": "uses"},
+                {"to": "Pydantic", "type": "depends_on"},
+            ],
+        )
+
+        assert result["status"] == "created"
+        assert result["relations_created"] == 2
+        assert "relations_failed" not in result
+
+        # Verify relations in state
+        assert len(engine.state.relations) == 2
+
+
+def test_remember_handles_missing_relation_target():
+    """Test remember reports failed relations when target doesn't exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        result = engine.remember(
+            name="FastAPI",
+            entity_type="concept",
+            relations=[
+                {"to": "NonExistent", "type": "uses"},
+            ],
+        )
+
+        # Entity should still be created
+        assert result["status"] == "created"
+        assert result["relations_created"] == 0
+        assert len(result["relations_failed"]) == 1
+        assert "NonExistent" in result["relations_failed"][0]["error"]
+
+
+def test_remember_blocks_duplicate():
+    """Test remember blocks when similar entity exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create initial entity
+        engine.create_entities([
+            {"name": "React", "entityType": "concept"},
+        ])
+
+        # Try to remember similar entity
+        result = engine.remember(
+            name="ReactJS",
+            entity_type="concept",
+            observations=["JavaScript library"],
+        )
+
+        assert result["status"] == "duplicate_warning"
+        assert "React" in result["warning"]
+        assert "suggestion" in result
+
+        # Verify entity was NOT created
+        assert len(engine.state.entities) == 1
+
+
+def test_remember_force_bypasses_duplicate_check():
+    """Test remember with force=True bypasses duplicate check."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create initial entity
+        engine.create_entities([
+            {"name": "React", "entityType": "concept"},
+        ])
+
+        # Force remember similar entity
+        result = engine.remember(
+            name="ReactJS",
+            entity_type="concept",
+            observations=["Alternative name for React"],
+            force=True,
+        )
+
+        assert result["status"] == "created"
+        assert result["entity"]["name"] == "ReactJS"
+
+        # Verify both entities exist
+        assert len(engine.state.entities) == 2
+
+
+def test_remember_minimal_call():
+    """Test remember with only required arguments."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        result = engine.remember(
+            name="SimpleConcept",
+            entity_type="concept",
+        )
+
+        assert result["status"] == "created"
+        assert result["entity"]["name"] == "SimpleConcept"
+        assert result["relations_created"] == 0
+        assert len(result["entity"]["observations"]) == 0
+
+
+def test_remember_full_workflow():
+    """Test remember with full entity + observations + relations workflow."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create a project
+        engine.remember(
+            name="MyProject",
+            entity_type="project",
+            observations=["A web application"],
+        )
+
+        # Create concepts the project uses
+        engine.remember(name="Python", entity_type="concept")
+        engine.remember(name="PostgreSQL", entity_type="concept")
+
+        # Create a decision with relations
+        result = engine.remember(
+            name="Decision: Use FastAPI",
+            entity_type="decision",
+            observations=[
+                "Chose FastAPI for its async support",
+                "Better performance than Flask for our use case",
+            ],
+            relations=[
+                {"to": "MyProject", "type": "decided_for"},
+                {"to": "Python", "type": "uses"},
+            ],
+        )
+
+        assert result["status"] == "created"
+        assert result["relations_created"] == 2
+
+        # Verify the decision is connected
+        decision_id = result["entity"]["id"]
+        neighbors = engine.get_entity_neighbors(decision_id)
+        assert len(neighbors["neighbors"]) == 2

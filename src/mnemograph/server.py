@@ -121,6 +121,57 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="remember",
+            description=(
+                "Store knowledge atomically — entity + observations + relations in ONE call. "
+                "PRIMARY TOOL for storing new knowledge. Prevents orphan entities. "
+                "AUTO-BLOCKS if similar entity exists (>80% match). Use force=True to override."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Entity name (canonical form: 'FastAPI' not 'fastapi framework')",
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "enum": [
+                            "concept", "decision", "project",
+                            "pattern", "question", "learning", "entity"
+                        ],
+                        "description": "concept=ideas/tech, decision=choices, project=repos, pattern=solutions, question=unknowns, learning=discoveries",
+                    },
+                    "observations": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Atomic facts about this entity",
+                    },
+                    "relations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "to": {"type": "string", "description": "Target entity name"},
+                                "type": {
+                                    "type": "string",
+                                    "description": "Relation type: uses, implements, depends_on, part_of, etc.",
+                                },
+                            },
+                            "required": ["to", "type"],
+                        },
+                        "description": "Relations FROM this entity to others",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Bypass duplicate check",
+                    },
+                },
+                "required": ["name", "entity_type"],
+            },
+        ),
+        Tool(
             name="create_relations",
             description=(
                 "Create relations (edges) between entities. Every entity should have at least one relation. "
@@ -246,7 +297,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
-            name="search_nodes",
+            name="search_graph",
             description=(
                 "Search entities by text. ALWAYS SEARCH BEFORE CREATING to avoid duplicates. "
                 "Try canonical names first, then variants ('PostgreSQL', 'Postgres', 'psql')."
@@ -295,7 +346,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="memory_context",
+            name="recall",
             description=(
                 "Get relevant context for a query. Use at session start or before decisions. "
                 "shallow=quick summary, medium=semantic search+neighbors (default), deep=full exploration."
@@ -610,6 +661,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = [e.model_dump(mode="json") for e in created]
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
+        elif name == "remember":
+            result = engine.remember(
+                name=arguments["name"],
+                entity_type=arguments["entity_type"],
+                observations=arguments.get("observations"),
+                relations=arguments.get("relations"),
+                force=arguments.get("force", False),
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
         elif name == "create_relations":
             result = engine.create_relations(arguments["relations"])
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
@@ -634,8 +695,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = engine.read_graph()
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
-        elif name == "search_nodes":
-            result = engine.search_nodes(arguments["query"])
+        elif name == "search_graph":
+            result = engine.search_graph(arguments["query"])
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "open_nodes":
@@ -650,8 +711,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
-        elif name == "memory_context":
-            result = engine.memory_context(
+        elif name == "recall":
+            result = engine.recall(
                 depth=arguments["depth"],
                 query=arguments.get("query"),
                 focus=arguments.get("focus"),
