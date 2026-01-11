@@ -14,37 +14,48 @@ Claude Code sessions are ephemeral. Mnemograph gives your AI partner persistent 
 - **Versions like code** — branch, commit, diff, revert your knowledge graph
 - **Enables collaboration** — share memory repos across users or projects
 
-## Installation
+## Quick Start
+
+### Option 1: Let Claude Code install it
+
+Give Claude Code this repo URL and ask it to set up mnemograph:
+
+```
+https://github.com/tm42/mnemograph
+```
+
+Or point Claude to the setup instructions directly:
+
+```
+Read https://raw.githubusercontent.com/tm42/mnemograph/main/SETUP_CLAUDE_CODE.md and follow them
+```
+
+### Option 2: Manual installation
 
 ```bash
 # Install from PyPI
 pip install mnemograph
 
-# Or install from source
-git clone https://github.com/tm42/mnemograph.git
-cd mnemograph
-uv sync  # or: pip install -e .
+# Add to Claude Code (global, available in all projects)
+claude mcp add --scope user mnemograph \
+  -e MEMORY_PATH="$HOME/.claude/memory" \
+  -- uvx mnemograph
 
-# Initialize memory (creates ~/.claude/memory/)
-claude-mem init
+# Initialize memory directory
+mkdir -p ~/.claude/memory
 ```
 
-### Configure Claude Code
+### Option 3: Install from source
 
-Add to your MCP settings (`~/.claude.json` or project `.mcp.json`):
+```bash
+git clone https://github.com/tm42/mnemograph.git
+cd mnemograph
+uv sync
 
-```json
-{
-  "mcpServers": {
-    "mnemograph": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/mnemograph", "mnemograph"],
-      "env": {
-        "MEMORY_PATH": "/Users/YOU/.claude/memory"
-      }
-    }
-  }
-}
+# Add to Claude Code
+claude mcp add --scope user mnemograph \
+  -e MEMORY_PATH="$HOME/.claude/memory" \
+  -- uv run --directory /path/to/mnemograph mnemograph
 ```
 
 ## Usage
@@ -86,9 +97,7 @@ mnemograph-cli export              # Export graph as JSON
 claude-mem init                  # Initialize memory as git repo
 claude-mem status                # Show uncommitted changes
 claude-mem commit -m "message"   # Commit current state
-claude-mem commit -m "msg" -a    # Commit with auto-summary
 claude-mem log                   # View commit history
-claude-mem log --oneline         # Compact commit log
 ```
 
 ## Architecture
@@ -127,8 +136,10 @@ claude-mem log --oneline         # Compact commit log
 ## Development
 
 ```bash
+git clone https://github.com/tm42/mnemograph.git
+cd mnemograph
 uv sync                    # Install dependencies
-uv run pytest              # Run tests (56 tests)
+uv run pytest              # Run tests
 uv run ruff check .        # Lint
 uv run mnemograph          # Run MCP server directly
 ```
