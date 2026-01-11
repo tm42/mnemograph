@@ -25,10 +25,8 @@ build/
 htmlcov/
 .tox/
 
-# Project specific
-.claude/memory/*.jsonl
-.claude/memory/*.db
-.claude/memory/*.json
+# Project specific - Claude Code local data
+.claude/
 
 # OS
 .DS_Store
