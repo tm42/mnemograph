@@ -101,11 +101,12 @@ claude mcp add --scope user mnemograph \
 
 Mnemograph exposes these tools via MCP:
 
+**Core Operations:**
+
 | Tool | Description |
 |------|-------------|
 | `remember` | **Primary storage**: Store knowledge atomically (entity + observations + relations in one call) |
-| `recall` | **Primary retrieval**: Get relevant context with auto token management (shallow/medium/deep). Returns structure-only if results too large. |
-| `open_nodes` | Get full data for specific entities (after recall) |
+| `recall` | **Primary retrieval**: Get relevant context with auto token management. Use `focus=['Entity']` for full details. Default output is human-readable prose. |
 | `create_entities` | Create entities (auto-blocks duplicates >80% match) |
 | `create_relations` | Link entities with typed edges (implements, uses, decided_for, etc.) |
 | `add_observations` | Add facts/notes to existing entities |
@@ -113,20 +114,87 @@ Mnemograph exposes these tools via MCP:
 | `delete_entities` | Remove entities (cascades to relations) |
 | `delete_relations` | Remove specific relations |
 | `delete_observations` | Remove specific observations |
+
+**Session Lifecycle:**
+
+| Tool | Description |
+|------|-------------|
+| `session_start` | Signal session start, get initial context. Returns quick_start guide. |
+| `session_end` | Signal session end, optionally save summary |
+| `get_primer` | Get oriented with the knowledge graph (call at session start) |
+
+**Branching (Parallel Workstreams):**
+
+| Tool | Description |
+|------|-------------|
+| `create_branch` | Create a named branch for isolated work (e.g., "feature/auth-refactor") |
+| `switch_branch` | Switch to a different branch |
+| `list_branches` | List all branches |
+| `merge_branch` | Merge a branch into main |
+| `delete_branch` | Delete a branch |
+| `get_current_branch` | Get the current branch name |
+
+**Graph Maintenance:**
+
+| Tool | Description |
+|------|-------------|
 | `find_similar` | Find entities with similar names (duplicate detection) |
 | `find_orphans` | Find entities with no relations |
 | `merge_entities` | Merge duplicate entities (consolidates observations, redirects relations) |
 | `get_graph_health` | Assess graph quality: orphans, duplicates, overloaded entities |
 | `suggest_relations` | Suggest potential relations based on semantic similarity |
-| `get_state_at` | Time travel: view graph state at any point in history |
+| `create_entities_force` | Create entities bypassing duplicate check |
+| `clear_graph` | Clear all entities/relations (event-sourced, can rewind) |
+
+**Time Travel:**
+
+| Tool | Description |
+|------|-------------|
+| `get_state_at` | View graph state at any point in history |
 | `diff_timerange` | Show what changed between two points in time |
 | `get_entity_history` | Full changelog for a specific entity |
+| `rewind` | Rewind graph to a previous state using git |
+| `restore_state_at` | Restore graph to state at timestamp (audit-preserving) |
+| `reload` | Reload graph state from disk (after git operations) |
+
+**Edge Weights:**
+
+| Tool | Description |
+|------|-------------|
 | `get_relation_weight` | Get weight breakdown (recency, co-access, explicit) |
 | `set_relation_importance` | Set explicit importance weight (0.0-1.0) |
 | `get_strongest_connections` | Find entity's most important connections |
 | `get_weak_relations` | Find pruning candidates (low-weight relations) |
-| `clear_graph` | Clear all entities/relations (event-sourced, can rewind) |
-| `create_entities_force` | Create entities bypassing duplicate check |
+
+### Recall: Prose vs Graph Format
+
+The `recall` tool returns context in **prose format by default** — human-readable text that agents can consume directly without parsing JSON:
+
+```python
+# Default: prose format (human-readable)
+recall(depth="medium", query="authentication")
+# Returns:
+# **MyApp** (project)
+# A Python web service. Uses OAuth2 for user auth.
+# Uses: PostgreSQL, Redis
+#
+# **Decisions:**
+# • Decision: Use JWT — Stateless tokens for API authentication
+#
+# **Gotchas:**
+# • Token expiry is 1 hour by default
+# • Refresh tokens stored in Redis
+
+# Optional: graph format (structured JSON)
+recall(depth="medium", query="authentication", format="graph")
+```
+
+**Depth levels:**
+- `shallow` — Quick summary: entity counts, recent activity, gotchas
+- `medium` — Semantic search + 1-hop neighbors (~2000 tokens)
+- `deep` — Multi-hop traversal from focus entities (~5000 tokens)
+
+**Gotcha extraction:** Observations prefixed with `Gotcha:`, `Warning:`, `Note:`, or `Important:` are automatically extracted into a dedicated section.
 
 ### CLI Tools
 
@@ -202,6 +270,48 @@ uvx mnemograph-cli status
 **Two-layer versioning:**
 - `mnemograph-cli revert` — fine-grained, undo specific events via compensating events
 - `claude-mem commit/revert` — coarse-grained, git-level checkpoints
+
+## Branching
+
+Branches let you work on isolated knowledge without affecting the main graph. Perfect for:
+
+- **Exploratory work** — try approaches without polluting shared knowledge
+- **Feature-specific context** — "feature/auth-refactor" keeps auth decisions separate
+- **Multiple projects** — switch context between different codebases
+
+### Creating and Using Branches
+
+```python
+# Create a branch for your feature
+create_branch(name="feature/auth-refactor")
+
+# Work normally — all operations happen on this branch
+remember(name="OAuth2", entity_type="concept",
+         observations=["Implementing OAuth2 flow"])
+
+# Switch back to main to see clean state
+switch_branch(name="main")
+
+# Merge when ready
+merge_branch(source="feature/auth-refactor", target="main")
+```
+
+### How Branching Works
+
+- **Main branch** always exists, contains shared knowledge
+- **Feature branches** inherit from main but additions stay isolated
+- **Automatic filtering** — `recall`, `search`, etc. only see current branch + main
+- **Merge** copies branch entities/relations into target branch
+- **Delete** cleans up after merge (or abandons exploratory work)
+
+### Branch Naming Conventions
+
+| Pattern | Use Case |
+|---------|----------|
+| `feature/xyz` | Feature-specific knowledge |
+| `explore/xyz` | Exploratory/experimental work |
+| `project/xyz` | Project-specific context |
+| `user/name` | Personal workspace |
 
 ## Entity Types
 
