@@ -62,7 +62,8 @@ MNEMOGRAPH_GUIDE_SEED = {
             "type": "pattern",
             "observations": [
                 "Start every session with session_start() to get orientation and quick_start guide.",
-                "Use recall(depth='shallow') for quick overview, 'medium' for task context, 'deep' for exploration.",
+                "Use recall(depth='shallow') for overview, 'medium' for task context, 'deep' for exploration.",
+                "For large results, recall returns structure-only — use open_nodes() to expand specific entities.",
                 "Store new knowledge with remember(name, type, observations, relations) — one atomic call.",
                 "Add facts to existing entities with add_observations(entity, [...]).",
                 "Run get_graph_health() periodically to find orphans, duplicates, and maintenance tasks.",
@@ -120,6 +121,7 @@ MNEMOGRAPH_GUIDE_SEED = {
                 "shallow (~500 tokens): Summary stats, recent entities, hot topics. Use for orientation.",
                 "medium (~2000 tokens): Semantic search + 1-hop neighbors. Use for task-specific context.",
                 "deep (~5000 tokens): Multi-hop weighted subgraph. Use for exploration and understanding.",
+                "For large results, recall() returns structure-only — use open_nodes() to expand.",
                 "Token budgets help manage context windows. Request only what you need.",
                 "Weights prioritize: 40% recency, 30% co-access (learned), 30% explicit importance.",
             ],
@@ -640,6 +642,146 @@ class MemoryEngine:
             "relations": [r.model_dump(mode="json") for r in self.state.relations],
         }
 
+    def get_structure(
+        self,
+        entity_ids: list[str] | None = None,
+        include_neighbors: bool = True,
+    ) -> dict:
+        """Get graph structure (names, types, relations) without full observations.
+
+        This is the lightweight alternative to search_graph/read_graph for initial
+        exploration. Returns ~10x fewer tokens than full data.
+
+        Args:
+            entity_ids: Specific entity IDs to include (None = all)
+            include_neighbors: If True, include 1-hop neighbors of specified entities
+
+        Returns:
+            Dict with 'entities' (summaries) and 'relations' (summaries)
+        """
+        if entity_ids is None:
+            # All entities
+            target_ids = set(self.state.entities.keys())
+        else:
+            target_ids = set(entity_ids)
+
+            if include_neighbors:
+                # Add 1-hop neighbors
+                for eid in list(target_ids):
+                    for rel in self.state.get_outgoing_relations(eid):
+                        target_ids.add(rel.to_entity)
+                    for rel in self.state.get_incoming_relations(eid):
+                        target_ids.add(rel.from_entity)
+
+        # Build lightweight entity summaries
+        entities = []
+        for eid in target_ids:
+            if eid in self.state.entities:
+                entity = self.state.entities[eid]
+                entities.append({
+                    "id": entity.id,
+                    "name": entity.name,
+                    "type": entity.type,
+                    "observation_count": len(entity.observations),
+                })
+
+        # Build relation summaries
+        relations = []
+        for rel in self.state.relations:
+            if rel.from_entity in target_ids or rel.to_entity in target_ids:
+                from_entity = self.state.entities.get(rel.from_entity)
+                to_entity = self.state.entities.get(rel.to_entity)
+                relations.append({
+                    "from": from_entity.name if from_entity else rel.from_entity,
+                    "to": to_entity.name if to_entity else rel.to_entity,
+                    "type": rel.type,
+                    "weight": round(rel.weight, 2),
+                })
+
+        return {
+            "entity_count": len(entities),
+            "relation_count": len(relations),
+            "entities": entities,
+            "relations": relations,
+        }
+
+    def search_structure(self, query: str, limit: int = 20) -> dict:
+        """Search for entities and return structure-only results.
+
+        Combines text and semantic search, returns lightweight summaries.
+        Use open_nodes() to get full data for specific entities.
+
+        Args:
+            query: Search query
+            limit: Max entities to return
+
+        Returns:
+            Structure with matched entities, their relations, and token estimate
+        """
+        query_lower = query.lower()
+        matched_ids: list[str] = []
+        scores: dict[str, float] = {}
+
+        # 1. Text search (exact matches score higher)
+        for entity in self.state.entities.values():
+            score = 0.0
+
+            # Name match (highest)
+            if query_lower in entity.name.lower():
+                score = 1.0 if query_lower == entity.name.lower() else 0.9
+            # Type match
+            elif query_lower in entity.type.lower():
+                score = 0.5
+            # Observation match
+            else:
+                for obs in entity.observations:
+                    if query_lower in obs.text.lower():
+                        score = 0.6
+                        break
+
+            if score > 0:
+                matched_ids.append(entity.id)
+                scores[entity.id] = score
+
+        # 2. Semantic search (adds more candidates)
+        if self._vector_index is not None:
+            try:
+                vector_results = self.vector_index.search(query, limit=limit)
+                for eid, vscore in vector_results:
+                    if eid in self.state.entities:
+                        if eid not in scores:
+                            matched_ids.append(eid)
+                            scores[eid] = vscore * 0.8  # Weight semantic slightly lower
+                        else:
+                            # Boost score if found by both methods
+                            scores[eid] = min(1.0, scores[eid] + vscore * 0.2)
+            except Exception:
+                pass
+
+        # Sort by score and limit
+        matched_ids.sort(key=lambda x: scores.get(x, 0), reverse=True)
+        matched_ids = matched_ids[:limit]
+
+        # Get structure for matched entities
+        structure = self.get_structure(matched_ids, include_neighbors=True)
+
+        # Estimate tokens for full data
+        total_obs = sum(
+            len(self.state.entities[eid].observations)
+            for eid in matched_ids
+            if eid in self.state.entities
+        )
+        estimated_full_tokens = total_obs * 50  # ~50 tokens per observation avg
+
+        return {
+            "query": query,
+            "matched_count": len(matched_ids),
+            "structure": structure,
+            "estimated_full_tokens": estimated_full_tokens,
+            "hint": f"Use open_nodes([...]) to get full data for specific entities. "
+                   f"Full data for all matches would be ~{estimated_full_tokens} tokens.",
+        }
+
     def search_graph(self, query: str) -> dict:
         """Search entities by text across names, types, observations."""
         query_lower = query.lower()
@@ -842,35 +984,91 @@ class MemoryEngine:
     ) -> dict:
         """Get memory context at varying depth levels.
 
+        This is the PRIMARY retrieval tool. Returns structure-first for large results,
+        with hints to use open_nodes() for full data on specific entities.
+
         Args:
             depth: 'shallow' (summary), 'medium' (search + neighbors), 'deep' (multi-hop)
-            query: Search query for medium depth (uses semantic search)
+            query: Search query for medium/deep depth (uses semantic search)
             focus: Entity names to focus on
             max_tokens: Token budget (defaults vary by depth)
 
         Returns:
             Dict with depth, tokens_estimate, content, entity_count, relation_count
+            For medium/deep: may include 'structure_only' flag if results too large
         """
         from .retrieval import get_shallow_context, get_medium_context, get_deep_context
 
         if depth == "shallow":
             tokens = max_tokens or SHALLOW_CONTEXT_TOKENS
             result = get_shallow_context(self.state, tokens)
+            return {
+                "depth": result.depth,
+                "tokens_estimate": result.tokens_estimate,
+                "content": result.content,
+                "entity_count": result.entity_count,
+                "relation_count": result.relation_count,
+            }
 
         elif depth == "medium":
             tokens = max_tokens or MEDIUM_CONTEXT_TOKENS
-            # Get vector search results if query provided
+
+            # First, do a structure search to estimate size
+            if query:
+                structure_result = self.search_structure(query, limit=20)
+                estimated_tokens = structure_result["estimated_full_tokens"]
+
+                # If results would be too large, return structure-only
+                if estimated_tokens > tokens:
+                    self.save_co_access_cache()
+                    return {
+                        "depth": "medium",
+                        "structure_only": True,
+                        "reason": f"Full results would be ~{estimated_tokens} tokens (budget: {tokens})",
+                        "matched_count": structure_result["matched_count"],
+                        "content": self._format_structure(structure_result["structure"]),
+                        "tokens_estimate": structure_result["structure"]["entity_count"] * 15,
+                        "entity_count": structure_result["structure"]["entity_count"],
+                        "relation_count": structure_result["structure"]["relation_count"],
+                        "hint": "Use open_nodes(['entity1', 'entity2']) to get full data for specific entities",
+                    }
+
+            # Normal path: get vector search results
             vector_results = None
             if query:
                 vector_results = self.vector_index.search(query, limit=DEFAULT_QUERY_LIMIT)
             result = get_medium_context(self.state, vector_results, focus, tokens)
-            # Save co-access learning
             self.save_co_access_cache()
 
         elif depth == "deep":
             tokens = max_tokens or DEEP_CONTEXT_TOKENS
+
+            # For deep, estimate first based on focus entities
+            if focus:
+                focus_ids = [self._resolve_entity(f) for f in focus]
+                focus_ids = [fid for fid in focus_ids if fid]
+                structure = self.get_structure(focus_ids, include_neighbors=True)
+                total_obs = sum(
+                    len(self.state.entities[eid].observations)
+                    for eid in focus_ids
+                    if eid in self.state.entities
+                )
+                estimated_tokens = total_obs * 50
+
+                if estimated_tokens > tokens:
+                    self.save_co_access_cache()
+                    return {
+                        "depth": "deep",
+                        "structure_only": True,
+                        "reason": f"Full results would be ~{estimated_tokens} tokens (budget: {tokens})",
+                        "content": self._format_structure(structure),
+                        "tokens_estimate": structure["entity_count"] * 15,
+                        "entity_count": structure["entity_count"],
+                        "relation_count": structure["relation_count"],
+                        "hint": "Use open_nodes(['entity1', 'entity2']) to get full data for specific entities",
+                    }
+
             result = get_deep_context(self.state, focus, tokens)
-            # Save co-access learning
             self.save_co_access_cache()
 
         else:
@@ -883,6 +1081,42 @@ class MemoryEngine:
             "entity_count": result.entity_count,
             "relation_count": result.relation_count,
         }
+
+    def _format_structure(self, structure: dict) -> str:
+        """Format structure-only results as readable markdown."""
+        lines = [
+            f"## Graph Structure ({structure['entity_count']} entities, {structure['relation_count']} relations)",
+            "",
+            "### Entities",
+        ]
+
+        # Group entities by type
+        by_type: dict[str, list[dict]] = {}
+        for e in structure["entities"]:
+            etype = e["type"]
+            if etype not in by_type:
+                by_type[etype] = []
+            by_type[etype].append(e)
+
+        for etype, entities in sorted(by_type.items()):
+            lines.append(f"\n**{etype}** ({len(entities)})")
+            for e in entities[:10]:  # Limit per type
+                obs_hint = f" [{e['observation_count']} obs]" if e["observation_count"] > 0 else ""
+                lines.append(f"- {e['name']}{obs_hint}")
+            if len(entities) > 10:
+                lines.append(f"  ... and {len(entities) - 10} more")
+
+        # Relations summary
+        if structure["relations"]:
+            lines.append("\n### Key Relations")
+            # Show strongest relations
+            sorted_rels = sorted(structure["relations"], key=lambda r: r["weight"], reverse=True)
+            for rel in sorted_rels[:15]:
+                lines.append(f"- {rel['from']} --{rel['type']}--> {rel['to']}")
+            if len(sorted_rels) > 15:
+                lines.append(f"  ... and {len(sorted_rels) - 15} more relations")
+
+        return "\n".join(lines)
 
     # --- Event Rewind ---
 
@@ -1301,10 +1535,14 @@ class MemoryEngine:
                 project_entity = self.state.entities.get(project_id)
 
         quick_start = """DAILY USE:
-  recall(query, depth)             → get relevant context (shallow/medium/deep)
-  search_graph(query)              → find entities by text
+  recall(depth, query)             → PRIMARY RETRIEVAL (shallow/medium/deep)
+  open_nodes(['name1', 'name2'])   → get FULL data for specific entities
   remember(name, type, obs, rels)  → store new knowledge (entity + relations)
   add_observations(entity, [...])  → add facts to existing entity
+
+WORKFLOW:
+  1. recall(depth='medium', query='topic') → returns structure if large
+  2. If structure-only, use open_nodes() to expand specific entities
 
 BEFORE CREATING:
   find_similar(name)               → check for duplicates (>80% blocks create)
@@ -1340,7 +1578,7 @@ IMPORTANT — MEMORY SCOPE:
   - Global (~/.claude/memory): cross-project learnings, personal preferences
   Configure via MEMORY_PATH env var or --global CLI flag.
 
-TIP: Start with recall() to see what's known, then remember() or add_observations()."""
+TIP: Start with recall(depth='shallow') to see what's known, then remember() or add_observations()."""
 
         result = {
             "session_id": self.session_id,

@@ -293,26 +293,12 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="read_graph",
-            description="Read the entire knowledge graph",
+            description="Read the entire knowledge graph. WARNING: May return large amounts of data. Use recall() for controlled retrieval.",
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
-            name="search_graph",
-            description=(
-                "Search entities by text. ALWAYS SEARCH BEFORE CREATING to avoid duplicates. "
-                "Try canonical names first, then variants ('PostgreSQL', 'Postgres', 'psql')."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search text (try canonical name, then variants)"}
-                },
-                "required": ["query"],
-            },
-        ),
-        Tool(
             name="open_nodes",
-            description="Get specific entities by name with their relations",
+            description="Get FULL data for specific entities by name (includes all observations). Use after recall() to expand specific entities.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -326,30 +312,11 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="search_semantic",
-            description="Search entities using semantic similarity (meaning-based, not just keyword matching)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Natural language search query"},
-                    "limit": {"type": "integer", "default": 10, "description": "Max results"},
-                    "type": {
-                        "type": "string",
-                        "description": "Filter by entity type",
-                        "enum": [
-                            "concept", "decision", "project",
-                            "pattern", "question", "learning", "entity"
-                        ],
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
-        Tool(
             name="recall",
             description=(
-                "Get relevant context for a query. Use at session start or before decisions. "
-                "shallow=quick summary, medium=semantic search+neighbors (default), deep=full exploration."
+                "PRIMARY RETRIEVAL TOOL. Get relevant context with automatic token management. "
+                "Returns structure-only if results too large, with hints to use open_nodes() for full data. "
+                "shallow=quick summary, medium=semantic search+neighbors, deep=full exploration."
             ),
             inputSchema={
                 "type": "object",
@@ -748,20 +715,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = engine.read_graph()
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
-        elif name == "search_graph":
-            result = engine.search_graph(arguments["query"])
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
-
         elif name == "open_nodes":
             result = engine.open_nodes(arguments["names"])
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
-
-        elif name == "search_semantic":
-            result = engine.search_semantic(
-                query=arguments["query"],
-                limit=arguments.get("limit", 10),
-                type_filter=arguments.get("type"),
-            )
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "recall":
@@ -771,6 +726,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 focus=arguments.get("focus"),
                 max_tokens=arguments.get("max_tokens"),
             )
+            # Return full result dict for structure-only responses
+            if result.get("structure_only"):
+                return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
             # Return the formatted content directly (it's markdown)
             return [TextContent(type="text", text=result["content"])]
 

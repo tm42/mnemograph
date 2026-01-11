@@ -59,6 +59,7 @@ session_start() → read quick_start guide → recall(depth='shallow')
 - Store decisions as you make them (with rationale!)
 - Note patterns you discover
 - Add observations to existing entities rather than creating duplicates
+- When results are large, recall returns structure-only — use `open_nodes(['entity1', 'entity2'])` to expand
 
 **Periodically**:
 - `get_graph_health()` to spot issues
@@ -98,6 +99,10 @@ Your job is to **propose knowledge**. Their job is to **curate** it.
 session_start()
 recall(depth='shallow')
 
+# Search and explore
+recall(depth='medium', query=query)            # semantic search + neighbors
+open_nodes(['entity1', 'entity2'])             # full data for specific entities
+
 # Store knowledge
 remember(name, type, observations, relations)  # atomic creation
 add_observations(entity, [...])                # extend existing
@@ -112,4 +117,4 @@ merge_entities(source, target)  # consolidate duplicates
 
 ---
 
-*This guide lives in the memory itself as `topic/mnemograph-guide`. Explore with `recall('mnemograph', depth='medium')`.*
+*This guide lives in the memory itself as `topic/mnemograph-guide`. Explore with `recall(depth='medium', query='mnemograph')`.*

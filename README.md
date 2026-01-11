@@ -103,15 +103,13 @@ Mnemograph exposes these tools via MCP:
 
 | Tool | Description |
 |------|-------------|
-| `remember` | **Primary tool**: Store knowledge atomically (entity + observations + relations in one call) |
-| `recall` | Get relevant context: shallow (summary), medium (search+neighbors), deep (subgraph) |
-| `search_graph` | Text search across entity names and observations |
-| `search_semantic` | Vector similarity search (meaning-based) |
+| `remember` | **Primary storage**: Store knowledge atomically (entity + observations + relations in one call) |
+| `recall` | **Primary retrieval**: Get relevant context with auto token management (shallow/medium/deep). Returns structure-only if results too large. |
+| `open_nodes` | Get full data for specific entities (after recall) |
 | `create_entities` | Create entities (auto-blocks duplicates >80% match) |
 | `create_relations` | Link entities with typed edges (implements, uses, decided_for, etc.) |
 | `add_observations` | Add facts/notes to existing entities |
-| `open_nodes` | Get specific entities with their relations |
-| `read_graph` | Get the full knowledge graph |
+| `read_graph` | Get the full knowledge graph (warning: may be large) |
 | `delete_entities` | Remove entities (cascades to relations) |
 | `delete_relations` | Remove specific relations |
 | `delete_observations` | Remove specific observations |

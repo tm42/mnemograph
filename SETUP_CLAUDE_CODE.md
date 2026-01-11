@@ -21,14 +21,14 @@ mkdir -p ~/.claude/memory
 ## Step 3: Verify Installation
 
 After setup, you should have access to these MCP tools:
+- `mcp__mnemograph__remember` — store knowledge atomically
+- `mcp__mnemograph__recall` — retrieve context at shallow/medium/deep levels
 - `mcp__mnemograph__create_entities`
 - `mcp__mnemograph__create_relations`
 - `mcp__mnemograph__add_observations`
-- `mcp__mnemograph__search_nodes`
-- `mcp__mnemograph__search_semantic`
-- `mcp__mnemograph__memory_context`
-- `mcp__mnemograph__read_graph`
 - `mcp__mnemograph__open_nodes`
+- `mcp__mnemograph__find_similar` — check for duplicates before creating
+- `mcp__mnemograph__read_graph`
 - `mcp__mnemograph__delete_entities`
 - `mcp__mnemograph__delete_relations`
 - `mcp__mnemograph__delete_observations`
@@ -41,10 +41,10 @@ Try creating a test entity:
 Use mcp__mnemograph__create_entities to create an entity named "Setup Test" of type "learning" with observation "Mnemograph successfully installed"
 ```
 
-Then search for it:
+Then recall it:
 
 ```
-Use mcp__mnemograph__search_nodes with query "Setup Test"
+Use mcp__mnemograph__recall with depth "shallow" to see memory summary
 ```
 
 ## How to Use Mnemograph
@@ -78,16 +78,15 @@ create_relations([{
 At the start of sessions, get relevant context:
 
 ```
-memory_context({ "depth": "shallow" })  # Quick summary (~500 tokens)
-memory_context({ "depth": "medium", "query": "topic" })  # Search + neighbors (~2000 tokens)
-memory_context({ "depth": "deep", "focus": ["Entity"] })  # Full subgraph (~5000 tokens)
+recall({ "depth": "shallow" })  # Quick summary (~500 tokens)
+recall({ "depth": "medium", "query": "topic" })  # Search + neighbors (~2000 tokens)
+recall({ "depth": "deep", "focus": ["Entity"] })  # Full subgraph (~5000 tokens)
 ```
 
-### Searching
+### Before Creating — Check for Duplicates
 
 ```
-search_nodes({ "query": "keyword" })  # Text search
-search_semantic({ "query": "concept description" })  # Meaning-based search
+find_similar({ "name": "React" })  # Returns similar entities with similarity scores
 ```
 
 ## Entity Types

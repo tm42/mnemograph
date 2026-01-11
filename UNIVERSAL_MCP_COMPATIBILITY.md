@@ -207,10 +207,11 @@ Tool descriptions should work well across different LLM backends:
 **Current tools** (already in mnemograph):
 | Tool | Description |
 |------|-------------|
+| `remember` | Store knowledge atomically (entity + observations + relations) |
+| `recall` | Get context at shallow/medium/deep levels |
 | `create_entities` | Create nodes in the knowledge graph |
-| `search_nodes` | Search entities by text query |
-| `search_semantic` | Search by meaning using embeddings |
-| `memory_context` | Get context at shallow/medium/deep levels |
+| `open_nodes` | Get full data for specific entities |
+| `find_similar` | Check for duplicates before creating |
 | `read_graph` | Return full graph state |
 | `get_state_at` | Time travel: view graph at any timestamp |
 | `diff_timerange` | Show changes between two times |
@@ -246,9 +247,9 @@ def get_primer() -> dict:
         "recent_activity": get_recent_entities(limit=5),
         "tools": {
             "retrieval": [
-                "memory_context(query, depth) - Get relevant context for a query",
-                "search_nodes(query, limit) - Search entities by text",
-                "get_entity(id_or_name) - Get full entity details",
+                "recall(depth, query) - Get relevant context at varying depths",
+                "open_nodes(names) - Get full data for specific entities",
+                "find_similar(name) - Check for duplicates before creating",
             ],
             "creation": [
                 "create_entity(name, type, observations) - Store new knowledge",
@@ -265,7 +266,7 @@ def get_primer() -> dict:
                 "diff_timerange(start, end) - See changes",
             ],
         },
-        "quick_start": "Call memory_context('current project state') for relevant context.",
+        "quick_start": "Call recall(depth='shallow') for quick summary, or recall(depth='medium', query='topic') for specific context.",
     }
 ```
 
@@ -289,7 +290,7 @@ def session_start(project_hint: str = None) -> dict:
     return {
         "context": format_context(context),
         "current_branch": engine.branch_manager.current_branch_name(),
-        "tip": "Use memory_context(query) for specific topics.",
+        "tip": "Use recall(depth='medium', query=topic) for specific topics.",
     }
 
 @tool  
@@ -387,7 +388,7 @@ mnemograph export-context > .mnemograph-context.md  # NO
 Agents should explicitly identify themselves if they want special treatment:
 ```python
 # In MCP handshake or tool call
-memory_context(query, agent_hint="claude-code")
+recall(depth, query, agent_hint="claude-code")
 ```
 
 Simpler, more predictable.
@@ -417,10 +418,10 @@ uvx mnemograph --help
 
 # 2. Test MCP tools via CLI (any client should produce similar output)
 # In your agent, try:
-#   - read_graph
-#   - create_entities with test data
-#   - search_nodes
-#   - memory_context with depth="shallow"
+#   - recall with depth="shallow"
+#   - remember with name, entity_type, observations
+#   - find_similar with name to check for duplicates
+#   - open_nodes with entity names
 ```
 
 ### Known Differences Between Clients
