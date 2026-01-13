@@ -143,9 +143,11 @@ interface MemoryEvent {
 
 ## Implementation Status (v0.3.0)
 
-**Completed**: Event sourcing, entity types, vector index, tiered retrieval, VCS CLI, time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
+**Completed**: Event sourcing, entity types, vector index, tiered retrieval, unified CLI (`mg`), time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
 
-**Deferred**: Sub-agent synthesis
+**Recent**: CLI consolidation — merged `cli.py` (argparse) + `vcs_cli.py` (Click) into unified Click CLI. All commands via `mg`, VCS under `mg vcs` subgroup.
+
+**Deferred**: Sub-agent synthesis, engine decomposition (Phase 2 of cleanup spec)
 
 ---
 

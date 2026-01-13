@@ -19,8 +19,8 @@ dependencies = [
 [project.scripts]
 mnemograph = "mnemograph.server:main"
 mnemograph-cli = "mnemograph.cli:main"
-mg = "mnemograph.vcs_cli:cli"        # Short universal alias
-claude-mem = "mnemograph.vcs_cli:cli" # Backward compat for CC users
+mg = "mnemograph.cli:cli"            # Short universal alias
+claude-mem = "mnemograph.cli:cli"    # Backward compat for CC users
 
 [project.urls]
 Homepage = "https://github.com/tm42/mnemograph"

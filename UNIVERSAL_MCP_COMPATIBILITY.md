@@ -184,11 +184,10 @@ claude-mem context "auth"
 # pyproject.toml
 
 [project.scripts]
-mnemograph = "mnemograph.cli:app"
-mg = "mnemograph.cli:app"
-claude-mem = "mnemograph.cli:app"  # Alias for CC users
-
-mnemograph-cli = "mnemograph.cli_events:app"  # Low-level event CLI
+mnemograph = "mnemograph.server:main"       # MCP server
+mnemograph-cli = "mnemograph.cli:main"      # Legacy entry point
+mg = "mnemograph.cli:cli"                   # Unified CLI (recommended)
+claude-mem = "mnemograph.cli:cli"           # Alias for CC users
 ```
 
 ---
@@ -447,7 +446,8 @@ uvx mnemograph --help
 - [x] Universal project descriptions — Done
 - [x] Add `get_primer` MCP tool — Done
 - [x] Add `session_start` / `session_end` MCP tools — Done
-- [x] Add `mnemograph-cli session-start/session-end/primer` CLI commands — Done
+- [x] Add `mg session-start/session-end/primer` CLI commands — Done
+- [x] CLI consolidation — merged into unified `mg` CLI with `vcs` subgroup
 
 ### Claude Code Plugin (separate package: mnemograph-claude-code)
 - [ ] SessionStart hook

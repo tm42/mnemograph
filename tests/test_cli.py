@@ -4,17 +4,15 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from mnemograph.cli import cmd_log, cmd_revert, cmd_status, cmd_sessions, parse_since, main
+from click.testing import CliRunner
+
+from mnemograph.cli import cli, parse_since
 from mnemograph.engine import MemoryEngine
 from mnemograph.events import EventStore
 from mnemograph.state import materialize
 
 
-class Args:
-    """Simple namespace for test args."""
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+runner = CliRunner()
 
 
 def test_parse_since_hours():
@@ -40,16 +38,14 @@ def test_parse_since_today():
     assert result.hour == 0 and result.minute == 0
 
 
-def test_cmd_status_empty():
+def test_status_empty():
     """Test status command with empty memory."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        Path(tmpdir).mkdir(parents=True, exist_ok=True)
-        args = Args(memory_path=tmpdir)
-        result = cmd_status(args)
-        assert result == 0  # Returns 0 even with empty memory (just shows zeros)
+        result = runner.invoke(cli, ["--memory-path", tmpdir, "status"])
+        assert result.exit_code == 0
 
 
-def test_cmd_status_with_data():
+def test_status_with_data():
     """Test status command with some data."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
@@ -57,140 +53,111 @@ def test_cmd_status_with_data():
             {"name": "Entity A", "entityType": "concept", "observations": ["Obs 1"]},
             {"name": "Entity B", "entityType": "decision", "observations": ["Obs 2"]},
         ])
+        engine.event_store.close()
 
-        args = Args(memory_path=tmpdir)
-        result = cmd_status(args)
-        assert result == 0
+        result = runner.invoke(cli, ["--memory-path", tmpdir, "status"])
+        assert result.exit_code == 0
+        assert "2" in result.output or "Entities" in result.output
 
 
-def test_cmd_log_empty():
+def test_log_empty():
     """Test log command with no events."""
     with tempfile.TemporaryDirectory() as tmpdir:
         Path(tmpdir).mkdir(parents=True, exist_ok=True)
-        # Create empty events file
-        (Path(tmpdir) / "mnemograph.db").touch()
-
-        args = Args(
-            memory_path=tmpdir,
-            since=None,
-            session=None,
-            op=None,
-            limit=None,
-            asc=False,
-            json=False,
-        )
-        result = cmd_log(args)
-        assert result == 0
+        result = runner.invoke(cli, ["--memory-path", tmpdir, "log"])
+        assert result.exit_code == 0
 
 
-def test_cmd_log_with_data():
+def test_log_with_data():
     """Test log command with events."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
         engine.create_entities([
             {"name": "Entity A", "entityType": "concept", "observations": ["Obs 1"]},
         ])
+        engine.event_store.close()
 
-        args = Args(
-            memory_path=tmpdir,
-            since=None,
-            session=None,
-            op=None,
-            limit=None,
-            asc=False,
-            json=False,
-        )
-        result = cmd_log(args)
-        assert result == 0
+        result = runner.invoke(cli, ["--memory-path", tmpdir, "log"])
+        assert result.exit_code == 0
+        assert "create_entity" in result.output or "Entity A" in result.output
 
 
-def test_cmd_log_filter_session():
+def test_log_filter_session():
     """Test log command filtering by session."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine1 = MemoryEngine(Path(tmpdir), "session-1")
         engine1.create_entities([{"name": "Entity A", "entityType": "concept"}])
+        engine1.event_store.close()
 
         engine2 = MemoryEngine(Path(tmpdir), "session-2")
         engine2.create_entities([{"name": "Entity B", "entityType": "concept"}])
+        engine2.event_store.close()
 
-        args = Args(
-            memory_path=tmpdir,
-            since=None,
-            session="session-1",
-            op=None,
-            limit=None,
-            asc=False,
-            json=False,
-        )
-        result = cmd_log(args)
-        assert result == 0
+        result = runner.invoke(cli, ["--memory-path", tmpdir, "log", "--session", "session-1"])
+        assert result.exit_code == 0
 
 
-def test_cmd_log_filter_op():
+def test_log_filter_op():
     """Test log command filtering by operation."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
         engine.create_entities([{"name": "Entity A", "entityType": "concept"}])
         engine.create_relations([{"from": "Entity A", "to": "Entity A", "relationType": "self"}])
+        engine.event_store.close()
 
-        args = Args(
-            memory_path=tmpdir,
-            since=None,
-            session=None,
-            op="create_entity",
-            limit=None,
-            asc=False,
-            json=False,
-        )
-        result = cmd_log(args)
-        assert result == 0
+        result = runner.invoke(cli, ["--memory-path", tmpdir, "log", "--op", "create_entity"])
+        assert result.exit_code == 0
 
 
-def test_cmd_sessions():
+def test_sessions():
     """Test sessions command."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine1 = MemoryEngine(Path(tmpdir), "session-1")
         engine1.create_entities([{"name": "Entity A", "entityType": "concept"}])
+        engine1.event_store.close()
 
         engine2 = MemoryEngine(Path(tmpdir), "session-2")
         engine2.create_entities([{"name": "Entity B", "entityType": "concept"}])
+        engine2.event_store.close()
 
-        args = Args(memory_path=tmpdir)
-        result = cmd_sessions(args)
-        assert result == 0
+        result = runner.invoke(cli, ["--memory-path", tmpdir, "sessions"])
+        assert result.exit_code == 0
 
 
-def test_cmd_revert_session():
+def test_revert_session():
     """Test reverting all events from a session."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
         engine.create_entities([
             {"name": "Entity A", "entityType": "concept", "observations": ["Obs 1"]},
         ])
+        engine.event_store.close()
 
         # Verify entity exists
         event_store = EventStore(Path(tmpdir) / "mnemograph.db")
         events_before = event_store.read_all()
         state_before = materialize(events_before)
         assert len(state_before.entities) == 1
+        event_store.close()
 
-        # Revert the session
-        args = Args(
-            memory_path=tmpdir,
-            session="test-session",
-            event_ids=[],
-            yes=True,  # Skip confirmation
-        )
-        result = cmd_revert(args)
-        assert result == 0
+        # Revert the session (--yes to skip confirmation)
+        result = runner.invoke(cli, [
+            "--memory-path", tmpdir,
+            "vcs", "revert",
+            "--session", "test-session",
+            "--yes"
+        ])
+        assert result.exit_code == 0
 
         # Verify entity is gone after replay
-        events_after = event_store.read_all()
+        event_store2 = EventStore(Path(tmpdir) / "mnemograph.db")
+        events_after = event_store2.read_all()
         state_after = materialize(events_after)
         assert len(state_after.entities) == 0
+        event_store2.close()
 
 
-def test_cmd_revert_specific_event():
+def test_revert_specific_event():
     """Test reverting a specific event by ID."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
@@ -198,35 +165,38 @@ def test_cmd_revert_specific_event():
             {"name": "Entity A", "entityType": "concept"},
             {"name": "Entity B", "entityType": "concept"},
         ])
+        engine.event_store.close()
 
         event_store = EventStore(Path(tmpdir) / "mnemograph.db")
         events = event_store.read_all()
         # Get the first create_entity event
         first_event = events[0]
+        event_store.close()
 
-        # Revert just that event (use full ID to avoid prefix collision
-        # since ULIDs created in same millisecond share prefix)
-        args = Args(
-            memory_path=tmpdir,
-            session=None,
-            event_ids=[first_event.id],  # Use full ID
-            yes=True,
-        )
-        result = cmd_revert(args)
-        assert result == 0
+        # Revert just that event (use full ID to avoid prefix collision)
+        result = runner.invoke(cli, [
+            "--memory-path", tmpdir,
+            "vcs", "revert",
+            "--event", first_event.id,
+            "--yes"
+        ])
+        assert result.exit_code == 0
 
         # Verify only first entity is gone
-        events_after = event_store.read_all()
+        event_store2 = EventStore(Path(tmpdir) / "mnemograph.db")
+        events_after = event_store2.read_all()
         state_after = materialize(events_after)
         assert len(state_after.entities) == 1
         assert "Entity B" in [e.name for e in state_after.entities.values()]
+        event_store2.close()
 
 
 def test_main_entry_point():
-    """Test main CLI entry point."""
+    """Test CLI entry point via status command."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test")
         engine.create_entities([{"name": "Test", "entityType": "concept"}])
+        engine.event_store.close()
 
-        result = main(["--memory-path", tmpdir, "status"])
-        assert result == 0
+        result = runner.invoke(cli, ["--memory-path", tmpdir, "status"])
+        assert result.exit_code == 0

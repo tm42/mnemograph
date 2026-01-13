@@ -198,28 +198,33 @@ recall(depth="medium", query="authentication", format="graph")
 
 ### CLI Tools
 
-**`mnemograph-cli`** — Event-level operations:
+**`mg`** (or `claude-mem`) — Unified CLI for all memory operations:
 
 ```bash
-mnemograph-cli status              # Show entity/relation counts, recent events
-mnemograph-cli log                 # View event history
-mnemograph-cli log --session X     # Filter by session
-mnemograph-cli revert --event ID   # Undo specific events
-mnemograph-cli revert --session X  # Undo entire session
-mnemograph-cli export              # Export graph as JSON
-```
+# Basic operations
+mg status                # Show entity/relation counts, recent events
+mg log                   # View event history
+mg log --session X       # Filter by session
+mg sessions              # List all sessions
+mg export                # Export graph as JSON
 
-**`mg`** (or `claude-mem`) — Git-based version control:
+# VCS commands (git-based version control)
+mg vcs init              # Initialize memory as git repo
+mg vcs commit -m "msg"   # Commit current state
+mg vcs log               # View commit history
+mg vcs revert --event ID # Undo specific events (compensating events)
+mg vcs revert --session X # Undo entire session
 
-```bash
-mg init                  # Initialize memory as git repo
-mg status                # Show uncommitted changes
-mg commit -m "message"   # Commit current state
-mg log                   # View commit history
+# Graph visualization
 mg graph                 # Open interactive graph viewer
 mg graph --watch         # Live reload mode (refresh button)
-mg --global graph        # Use global memory (~/.mnemograph/memory)
-mg --memory-path ~/.opencode/memory graph  # Custom memory location
+
+# Time travel
+mg show --at "2 days ago"  # View state at a point in time
+mg diff "1 week ago"       # Show changes since then
+mg history "EntityName"    # Full changelog for an entity
+mg rewind -n 1             # Git-based rewind by N commits
+mg restore --to "yesterday" # Event-based restore (audit-preserving)
 
 # Graph health and maintenance
 mg health                # Show graph health report (orphans, duplicates, etc.)
@@ -228,10 +233,11 @@ mg similar "React"       # Find entities similar to "React" (duplicate check)
 mg orphans               # List entities with no relations
 mg suggest "FastAPI"     # Suggest relations for an entity
 mg clear                 # Clear all entities and relations (with confirmation)
-mg clear -y -m "reason"  # Clear without confirmation, record reason
-```
 
-**Note**: Global options (`--global`, `--memory-path`) come *before* the subcommand.
+# Global options (come *before* the subcommand)
+mg --global status       # Use global memory (~/.claude/memory)
+mg --memory-path /path graph  # Custom memory location
+```
 
 **Running from anywhere** (without activating the venv):
 
@@ -240,7 +246,7 @@ mg clear -y -m "reason"  # Clear without confirmation, record reason
 uv run --directory /path/to/mnemograph mg graph
 
 # Using uvx (if installed from PyPI)
-uvx mnemograph-cli status
+uvx --from mnemograph mg status
 ```
 
 **Graph Visualization** — Interactive D3.js viewer:
@@ -268,8 +274,8 @@ uvx mnemograph-cli status
 - Audit trail of what Claude learned and when
 
 **Two-layer versioning:**
-- `mnemograph-cli revert` — fine-grained, undo specific events via compensating events
-- `claude-mem commit/revert` — coarse-grained, git-level checkpoints
+- `mg vcs revert` — fine-grained, undo specific events via compensating events
+- `mg rewind` / `mg restore` — coarse-grained, git-level or timestamp-based restore
 
 ## Branching
 
