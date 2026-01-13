@@ -1,4 +1,4 @@
-"""Tests for the event store."""
+"""Tests for the SQLite event store."""
 
 import tempfile
 from pathlib import Path
@@ -10,7 +10,7 @@ from mnemograph.models import MemoryEvent
 def test_append_and_read():
     """Test appending and reading events."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
 
         event = MemoryEvent(
             op="create_entity",
@@ -28,9 +28,9 @@ def test_append_and_read():
 
 
 def test_read_empty():
-    """Test reading from non-existent file."""
+    """Test reading from fresh database."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
         events = store.read_all()
         assert events == []
 
@@ -38,7 +38,7 @@ def test_read_empty():
 def test_read_since():
     """Test reading events since a given ID."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
 
         events = []
         for i in range(5):
@@ -60,7 +60,7 @@ def test_read_since():
 def test_count():
     """Test counting events."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
 
         assert store.count() == 0
 
@@ -72,85 +72,26 @@ def test_count():
         assert store.count() == 3
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Priority 1: Tolerant Reader Tests
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def test_read_all_skips_malformed_line():
-    """Verify valid events still load when there's a malformed line."""
+def test_read_by_session():
+    """Test reading events filtered by session."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
 
-        # Write a valid event
-        event1 = MemoryEvent(
-            op="create_entity", session_id="test", data={"id": "e1"}
-        )
-        store.append(event1)
+        # Create events from different sessions
+        store.append(MemoryEvent(op="create_entity", session_id="session1", data={"id": "e1"}))
+        store.append(MemoryEvent(op="create_entity", session_id="session2", data={"id": "e2"}))
+        store.append(MemoryEvent(op="create_entity", session_id="session1", data={"id": "e3"}))
 
-        # Manually write a malformed line
-        with open(store.path, "a") as f:
-            f.write("this is not valid json\n")
-
-        # Write another valid event
-        event2 = MemoryEvent(
-            op="create_entity", session_id="test", data={"id": "e2"}
-        )
-        store.append(event2)
-
-        # Should load both valid events, skip malformed
-        events = store.read_all(tolerant=True)
-        assert len(events) == 2
-        assert events[0].id == event1.id
-        assert events[1].id == event2.id
-
-
-def test_read_all_strict_mode_raises():
-    """Verify strict mode raises on malformed line."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
-
-        # Write a valid event
-        store.append(MemoryEvent(op="create_entity", session_id="test", data={}))
-
-        # Write malformed line
-        with open(store.path, "a") as f:
-            f.write("not json\n")
-
-        # Strict mode should raise
-        import pytest
-
-        with pytest.raises(ValueError, match="Malformed event at line 2"):
-            store.read_all(tolerant=False)
-
-
-def test_read_all_blank_lines_ignored():
-    """Verify blank lines don't cause issues."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
-
-        event = MemoryEvent(op="create_entity", session_id="test", data={})
-        store.append(event)
-
-        # Add blank lines
-        with open(store.path, "a") as f:
-            f.write("\n\n\n")
-
-        store.append(MemoryEvent(op="create_entity", session_id="test", data={}))
-
-        events = store.read_all()
-        assert len(events) == 2
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Priority 2 & 3: Durable Append and Process Lock Tests
-# ─────────────────────────────────────────────────────────────────────────────
+        # Read only session1 events
+        session1_events = store.read_by_session("session1")
+        assert len(session1_events) == 2
+        assert all(e.session_id == "session1" for e in session1_events)
 
 
 def test_append_creates_parent_dirs():
     """Verify directory creation works."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        nested_path = Path(tmpdir) / "nested" / "dirs" / "events.jsonl"
+        nested_path = Path(tmpdir) / "nested" / "dirs" / "mnemograph.db"
         store = EventStore(nested_path)
 
         event = MemoryEvent(op="create_entity", session_id="test", data={})
@@ -163,7 +104,7 @@ def test_append_creates_parent_dirs():
 def test_append_batch_writes_all_events():
     """Verify batch writes complete atomically."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
 
         events = [
             MemoryEvent(op="create_entity", session_id="test", data={"id": f"e{i}"})
@@ -180,77 +121,51 @@ def test_append_batch_writes_all_events():
 def test_append_batch_empty_list():
     """Verify batch with empty list is a no-op."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
         result = store.append_batch([])
         assert result == []
         assert store.count() == 0
 
 
-def test_concurrent_append_blocked():
-    """Verify concurrent writes are blocked (Unix only)."""
-    import sys
-
-    if sys.platform == "win32":
-        import pytest
-
-        pytest.skip("File locking not available on Windows")
-
-    import threading
-    import time
-
+def test_clear():
+    """Test clearing all events."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
 
-        # Hold the lock for a bit
-        lock_held = threading.Event()
-        lock_released = threading.Event()
-        blocked = []
+        # Add some events
+        for i in range(3):
+            store.append(
+                MemoryEvent(op="create_entity", session_id="test", data={"id": f"e{i}"})
+            )
+        assert store.count() == 3
 
-        def hold_lock():
-            with store._write_lock():
-                lock_held.set()
-                time.sleep(0.2)
-            lock_released.set()
-
-        def try_write():
-            lock_held.wait()  # Wait for first thread to acquire lock
-            try:
-                store.append(MemoryEvent(op="create_entity", session_id="t2", data={}))
-            except RuntimeError as e:
-                blocked.append(str(e))
-
-        t1 = threading.Thread(target=hold_lock)
-        t2 = threading.Thread(target=try_write)
-
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-
-        # t2 should have been blocked
-        assert len(blocked) == 1
-        assert "Another process" in blocked[0]
+        # Clear
+        store.clear()
+        assert store.count() == 0
 
 
-def test_lock_released_after_exception():
-    """Verify lock is released even when exception occurs."""
-    import sys
-
-    if sys.platform == "win32":
-        import pytest
-
-        pytest.skip("File locking not available on Windows")
-
+def test_get_connection_returns_same_connection():
+    """Verify get_connection returns the same connection instance."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = EventStore(Path(tmpdir) / "events.jsonl")
+        store = EventStore(Path(tmpdir) / "mnemograph.db")
 
-        # Force an exception inside the lock
-        try:
-            with store._write_lock():
-                raise ValueError("test error")
-        except ValueError:
-            pass
+        conn1 = store.get_connection()
+        conn2 = store.get_connection()
+        assert conn1 is conn2
 
-        # Lock should be released, so this should work
-        with store._write_lock():
-            pass  # Should not block
+
+def test_close_and_reopen():
+    """Verify data persists after close and reopen."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "mnemograph.db"
+
+        # Write and close
+        store1 = EventStore(db_path)
+        store1.append(MemoryEvent(op="create_entity", session_id="test", data={"id": "e1"}))
+        store1.close()
+
+        # Reopen and read
+        store2 = EventStore(db_path)
+        events = store2.read_all()
+        assert len(events) == 1
+        assert events[0].data["id"] == "e1"

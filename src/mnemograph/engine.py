@@ -323,16 +323,16 @@ def _validate_memory_repo(memory_dir: Path, git_root: Path | None) -> None:
         git_root: The detected git root (from git rev-parse --show-toplevel)
 
     Raises:
-        ValueError: If git_root doesn't contain events.jsonl, indicating
+        ValueError: If git_root doesn't contain mnemograph.db, indicating
             the memory directory is nested in another git repository.
     """
     if not git_root:
         return
 
-    events_path = git_root / "events.jsonl"
-    if not events_path.exists():
+    db_path = git_root / "mnemograph.db"
+    if not db_path.exists():
         raise ValueError(
-            f"Git root {git_root} does not contain events.jsonl. "
+            f"Git root {git_root} does not contain mnemograph.db. "
             f"Memory directory may be nested in another git repository. "
             f"Initialize a separate git repo in {memory_dir} or "
             f"move the memory directory outside the current repo."
@@ -363,9 +363,13 @@ class MemoryEngine:
     def __init__(self, memory_dir: Path, session_id: str):
         self.memory_dir = memory_dir
         self.session_id = session_id
-        self.event_store = EventStore(memory_dir / "events.jsonl")
+
+        # Single SQLite database for events and vectors
+        self._db_path = memory_dir / "mnemograph.db"
+        self.event_store = EventStore(self._db_path)
+
         self.state: GraphState = self._load_state()
-        self._vector_index = None  # Lazy-loaded
+        self._vector_index = None  # Lazy-loaded, shares db connection
         self._co_access_cache_path = memory_dir / "co_access_cache.json"
         self._load_co_access_cache()
 
@@ -1095,10 +1099,11 @@ class MemoryEngine:
 
     @property
     def vector_index(self):
-        """Lazy-load vector index."""
+        """Lazy-load vector index using shared database connection."""
         if self._vector_index is None:
             from .vectors import VectorIndex
-            self._vector_index = VectorIndex(self.memory_dir / "vectors.db")
+            # Use shared connection from event store
+            self._vector_index = VectorIndex(conn=self.event_store.get_connection())
             # Index all existing entities
             self._vector_index.reindex_all(list(self.state.entities.values()))
         return self._vector_index
@@ -1748,14 +1753,11 @@ class MemoryEngine:
             "recent_activity": recent_summary,
             "tools": {
                 "retrieval": [
-                    "recall(depth, query) - Get relevant context (shallow/medium/deep)",
-                    "search_graph(query) - Text search across entities",
-                    "search_semantic(query) - Meaning-based search with embeddings",
-                    "open_nodes(names) - Get specific entities with relations",
+                    "recall(depth, query, focus) - PRIMARY: Get relevant context (shallow/medium/deep). Use focus=['EntityName'] for full details.",
                 ],
                 "creation": [
-                    "remember(name, type, observations, relations) - Store knowledge atomically",
-                    "create_entities(entities) - Batch entity creation",
+                    "remember(name, type, observations, relations) - PRIMARY: Store knowledge atomically",
+                    "create_entities(entities) - Batch entity creation (auto-blocks duplicates)",
                     "add_observations(observations) - Add facts to existing entities",
                     "create_relations(relations) - Link entities together",
                 ],
@@ -1763,6 +1765,11 @@ class MemoryEngine:
                     "get_state_at(timestamp) - View graph at any point in time",
                     "diff_timerange(start, end) - See what changed",
                     "get_entity_history(name) - Full changelog for an entity",
+                ],
+                "maintenance": [
+                    "find_similar(name) - Check for duplicates before creating",
+                    "merge_entities(source, target) - Consolidate duplicates",
+                    "get_graph_health() - Assess graph quality",
                 ],
             },
             "quick_start": "Call recall(depth='shallow') for a summary, or remember() to store new knowledge.",
@@ -1956,11 +1963,11 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
     # --- Recovery Operations ---
 
     def reload(self) -> dict:
-        """Reload graph state from events.jsonl on disk.
+        """Reload graph state from mnemograph.db on disk.
 
         Use this after:
         - Git operations (checkout, restore, revert)
-        - External edits to events.jsonl
+        - External edits to mnemograph.db
         - Any time MCP server seems out of sync with disk
 
         Returns:
@@ -1981,13 +1988,13 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
     def rewind(self, steps: int = 1, to_commit: str | None = None) -> dict:
         """Rewind graph to a previous state using git.
 
-        This restores events.jsonl from git history and reloads.
+        This restores mnemograph.db from git history and reloads.
         Fast, but audit trail is only in git (not in events).
 
         For audit-preserving restore, use restore_state_at() instead.
 
         Args:
-            steps: Go back N commits that touched events.jsonl (default: 1)
+            steps: Go back N commits that touched mnemograph.db (default: 1)
             to_commit: Or specify exact commit hash
 
         Returns:
@@ -2003,13 +2010,13 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
                 "tip": "Use restore_state_at() for event-based restore instead.",
             }
 
-        events_path = self.event_store.path
+        events_path = self.event_store.db_path
         relative_path = events_path.relative_to(self._git_root) if self._git_root else events_path
 
         if to_commit:
             commit = to_commit
         else:
-            # Find the Nth commit that touched events.jsonl
+            # Find the Nth commit that touched the database
             result = subprocess.run(
                 ["git", "log", "--oneline", "--follow", "-n", str(steps + 1), "--", str(relative_path)],
                 cwd=self._git_root,

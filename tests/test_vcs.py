@@ -1,11 +1,12 @@
-"""Tests for VCS operations."""
+"""Tests for VCS operations with SQLite storage."""
 
-import json
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from mnemograph.events import EventStore
+from mnemograph.models import MemoryEvent
 from mnemograph.vcs import MemoryVCS
 
 
@@ -32,7 +33,7 @@ def test_init_creates_repo(temp_memory_dir):
     assert vcs.init() is True
     assert (temp_memory_dir / ".git").exists()
     assert (temp_memory_dir / ".gitignore").exists()
-    assert (temp_memory_dir / "events.jsonl").exists()
+    assert (temp_memory_dir / "mnemograph.db").exists()
 
 
 def test_init_idempotent(initialized_vcs, temp_memory_dir):
@@ -45,48 +46,40 @@ def test_status_clean(initialized_vcs):
     """Test status on clean repo."""
     status = initialized_vcs.status()
     assert status["branch"] in ("main", "master")
-    assert status["uncommitted_events"] == []
     assert status["is_dirty"] is False
 
 
 def test_status_with_uncommitted(initialized_vcs, temp_memory_dir):
-    """Test status shows uncommitted events."""
-    events_file = temp_memory_dir / "events.jsonl"
-    event = {
-        "op": "create_entity",
-        "data": {"id": "e1", "name": "test", "type": "concept"},
-        "session_id": "test",
-        "source": "cc",
-        "ts": "2025-01-01T00:00:00",
-        "id": "ev1"
-    }
-    with open(events_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
+    """Test status shows dirty when database changed."""
+    db_path = temp_memory_dir / "mnemograph.db"
+    event_store = EventStore(db_path)
+    event_store.append(MemoryEvent(
+        op="create_entity",
+        session_id="test",
+        source="cc",
+        data={"id": "e1", "name": "test", "type": "concept"},
+    ))
 
     status = initialized_vcs.status()
-    assert len(status["uncommitted_events"]) == 1
     assert status["is_dirty"] is True
+    assert status["event_count"] == 1
 
 
 def test_commit(initialized_vcs, temp_memory_dir):
     """Test commit creates a git commit."""
-    events_file = temp_memory_dir / "events.jsonl"
-    event = {
-        "op": "create_entity",
-        "data": {"id": "e1", "name": "test", "type": "concept"},
-        "session_id": "test",
-        "source": "cc",
-        "ts": "2025-01-01T00:00:00",
-        "id": "ev1"
-    }
-    with open(events_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
+    db_path = temp_memory_dir / "mnemograph.db"
+    event_store = EventStore(db_path)
+    event_store.append(MemoryEvent(
+        op="create_entity",
+        session_id="test",
+        source="cc",
+        data={"id": "e1", "name": "test", "type": "concept"},
+    ))
 
     commit_hash = initialized_vcs.commit("Test commit")
     assert len(commit_hash) == 7
 
     status = initialized_vcs.status()
-    assert status["uncommitted_events"] == []
     assert status["is_dirty"] is False
 
 
@@ -98,46 +91,19 @@ def test_commit_nothing_to_commit(initialized_vcs):
 
 def test_log(initialized_vcs, temp_memory_dir):
     """Test log shows commit history."""
-    # Add and commit
-    events_file = temp_memory_dir / "events.jsonl"
-    event = {
-        "op": "create_entity",
-        "data": {"id": "e1", "name": "test", "type": "concept"},
-        "session_id": "test",
-        "source": "cc",
-        "ts": "2025-01-01T00:00:00",
-        "id": "ev1"
-    }
-    with open(events_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
+    db_path = temp_memory_dir / "mnemograph.db"
+    event_store = EventStore(db_path)
+    event_store.append(MemoryEvent(
+        op="create_entity",
+        session_id="test",
+        source="cc",
+        data={"id": "e1", "name": "test", "type": "concept"},
+    ))
     initialized_vcs.commit("Added test entity")
 
     commits = initialized_vcs.log(n=5)
     assert len(commits) >= 2  # init + our commit
     assert "Added test entity" in commits[0]["message"]
-
-
-def test_log_stats(initialized_vcs, temp_memory_dir):
-    """Test log shows entity/relation stats."""
-    events_file = temp_memory_dir / "events.jsonl"
-
-    # Add entities
-    for i in range(3):
-        event = {
-            "op": "create_entity",
-            "data": {"id": f"e{i}", "name": f"Entity {i}", "type": "concept"},
-            "session_id": "test",
-            "source": "cc",
-            "ts": "2025-01-01T00:00:00",
-            "id": f"ev{i}"
-        }
-        with open(events_file, "a") as f:
-            f.write(json.dumps(event) + "\n")
-
-    initialized_vcs.commit("Added 3 entities")
-
-    commits = initialized_vcs.log(n=1)
-    assert commits[0]["stats"]["entities"] == 3
 
 
 def test_branch_operations(initialized_vcs):
@@ -155,72 +121,53 @@ def test_branch_operations(initialized_vcs):
     assert "feature" not in branches
 
 
-def test_diff_empty(initialized_vcs):
-    """Test diff when no changes."""
-    diff = initialized_vcs.diff("HEAD", None)
-    assert diff["entities"]["added"] == {}
-    assert diff["entities"]["removed"] == {}
+def test_show_current_state(initialized_vcs, temp_memory_dir):
+    """Test show returns current graph state."""
+    db_path = temp_memory_dir / "mnemograph.db"
+    event_store = EventStore(db_path)
+    event_store.append(MemoryEvent(
+        op="create_entity",
+        session_id="test",
+        source="cc",
+        data={"id": "e1", "name": "Test Entity", "type": "concept", "observations": []},
+    ))
 
-
-def test_diff_with_changes(initialized_vcs, temp_memory_dir):
-    """Test diff shows added entities."""
-    events_file = temp_memory_dir / "events.jsonl"
-    event = {
-        "op": "create_entity",
-        "data": {"id": "e1", "name": "New Entity", "type": "concept", "observations": []},
-        "session_id": "test",
-        "source": "cc",
-        "ts": "2025-01-01T00:00:00",
-        "id": "ev1"
-    }
-    with open(events_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
-
-    diff = initialized_vcs.diff("HEAD", None)
-    assert len(diff["entities"]["added"]) == 1
-    assert "e1" in diff["entities"]["added"]
-
-
-def test_show(initialized_vcs, temp_memory_dir):
-    """Test show returns graph state at ref."""
-    events_file = temp_memory_dir / "events.jsonl"
-    event = {
-        "op": "create_entity",
-        "data": {"id": "e1", "name": "Test Entity", "type": "concept", "observations": []},
-        "session_id": "test",
-        "source": "cc",
-        "ts": "2025-01-01T00:00:00",
-        "id": "ev1"
-    }
-    with open(events_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
-    initialized_vcs.commit("Added entity")
-
+    # With SQLite, show only works for HEAD/working
     state = initialized_vcs.show("HEAD")
     assert len(state["entities"]) == 1
     assert "e1" in state["entities"]
 
 
+def test_show_historical_unavailable(initialized_vcs):
+    """Test show returns error for historical refs with SQLite."""
+    state = initialized_vcs.show("HEAD~1")
+    assert "error" in state
+    assert "not available" in state["error"]
+
+
+def test_diff_unavailable_with_sqlite(initialized_vcs):
+    """Test diff returns note about SQLite limitations."""
+    diff = initialized_vcs.diff("HEAD", None)
+    assert "note" in diff
+    assert "not available" in diff["note"]
+
+
 def test_commit_auto_summary(initialized_vcs, temp_memory_dir):
-    """Test commit with auto-summary."""
-    events_file = temp_memory_dir / "events.jsonl"
-    event = {
-        "op": "create_entity",
-        "data": {"id": "e1", "name": "My Feature", "type": "concept", "observations": []},
-        "session_id": "test",
-        "source": "cc",
-        "ts": "2025-01-01T00:00:00",
-        "id": "ev1"
-    }
-    with open(events_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
+    """Test commit with auto-summary includes event count."""
+    db_path = temp_memory_dir / "mnemograph.db"
+    event_store = EventStore(db_path)
+    event_store.append(MemoryEvent(
+        op="create_entity",
+        session_id="test",
+        source="cc",
+        data={"id": "e1", "name": "My Feature", "type": "concept"},
+    ))
 
     initialized_vcs.commit("Added feature", auto_summary=True)
 
     commits = initialized_vcs.log(n=1)
-    # Message should contain auto-generated summary
     assert "Added feature" in commits[0]["message"]
-    assert "+1 entities" in commits[0]["message"] or "My Feature" in commits[0]["message"]
+    assert "1 event" in commits[0]["message"]
 
 
 # --- Git Safety Guard Tests ---
@@ -247,14 +194,14 @@ def test_nested_repo_detection():
             capture_output=True,
         )
 
-        # Create nested memory directory (no events.jsonl at git root)
+        # Create nested memory directory (no mnemograph.db at git root)
         nested_memory_dir = parent_repo / "subdir" / ".claude" / "memory"
         nested_memory_dir.mkdir(parents=True)
 
-        # Create events.jsonl in nested dir (but not at git root)
-        (nested_memory_dir / "events.jsonl").write_text("")
+        # Create mnemograph.db in nested dir (but not at git root)
+        EventStore(nested_memory_dir / "mnemograph.db")
 
-        # Should raise ValueError because git root doesn't contain events.jsonl
+        # Should raise ValueError because git root doesn't contain mnemograph.db
         with pytest.raises(ValueError, match="nested in another git repository"):
             MemoryEngine(nested_memory_dir, "test-session")
 
@@ -280,8 +227,8 @@ def test_proper_memory_repo_passes_validation():
             capture_output=True,
         )
 
-        # Create events.jsonl at git root (proper setup)
-        (memory_dir / "events.jsonl").write_text("")
+        # Create mnemograph.db at git root (proper setup)
+        EventStore(memory_dir / "mnemograph.db")
 
         # Should not raise
         engine = MemoryEngine(memory_dir, "test-session")
@@ -298,7 +245,7 @@ def test_marker_file_warning(caplog):
     with tempfile.TemporaryDirectory() as tmpdir:
         memory_dir = Path(tmpdir)
 
-        # Initialize git with events.jsonl but no .mnemograph marker
+        # Initialize git with mnemograph.db but no .mnemograph marker
         subprocess.run(["git", "init"], cwd=memory_dir, capture_output=True)
         subprocess.run(
             ["git", "config", "user.email", "test@test.com"],
@@ -310,7 +257,7 @@ def test_marker_file_warning(caplog):
             cwd=memory_dir,
             capture_output=True,
         )
-        (memory_dir / "events.jsonl").write_text("")
+        EventStore(memory_dir / "mnemograph.db")
 
         # Should log warning about missing marker
         with caplog.at_level(logging.WARNING, logger="mnemograph.engine"):
@@ -328,7 +275,7 @@ def test_marker_file_no_warning_when_present(caplog):
     with tempfile.TemporaryDirectory() as tmpdir:
         memory_dir = Path(tmpdir)
 
-        # Initialize git with events.jsonl AND .mnemograph marker
+        # Initialize git with mnemograph.db AND .mnemograph marker
         subprocess.run(["git", "init"], cwd=memory_dir, capture_output=True)
         subprocess.run(
             ["git", "config", "user.email", "test@test.com"],
@@ -340,7 +287,7 @@ def test_marker_file_no_warning_when_present(caplog):
             cwd=memory_dir,
             capture_output=True,
         )
-        (memory_dir / "events.jsonl").write_text("")
+        EventStore(memory_dir / "mnemograph.db")
         (memory_dir / ".mnemograph").write_text("")
 
         # Should not log warning

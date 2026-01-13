@@ -90,7 +90,7 @@ def status(ctx):
     from .events import EventStore
     from .state import materialize
 
-    event_store = EventStore(ctx.obj["memory_dir"] / "events.jsonl")
+    event_store = EventStore(ctx.obj["memory_dir"] / "mnemograph.db")
     events = event_store.read_all()
     state = materialize(events)
 
@@ -896,13 +896,13 @@ def clear(ctx, reason, yes, as_json):
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.pass_context
 def reload(ctx, as_json):
-    """Reload graph state from events.jsonl on disk.
+    """Reload graph state from mnemograph.db on disk.
 
     Use after git operations (checkout, restore) or external edits
-    to events.jsonl to sync the CLI with disk state.
+    to mnemograph.db to sync the CLI with disk state.
 
     Examples:
-        git restore .claude/memory/events.jsonl && mg reload
+        git restore .claude/memory/mnemograph.db && mg reload
         mg reload
     """
     memory_dir = ctx.obj["memory_dir"]
@@ -945,9 +945,9 @@ def rewind(ctx, steps, to_commit, yes, as_json):
     # Confirmation prompt
     if not yes and not as_json:
         if to_commit:
-            console.print(f"[yellow]⚠  This will rewind events.jsonl to commit {to_commit}.[/yellow]")
+            console.print(f"[yellow]⚠  This will rewind mnemograph.db to commit {to_commit}.[/yellow]")
         else:
-            console.print(f"[yellow]⚠  This will rewind events.jsonl by {steps} commit(s).[/yellow]")
+            console.print(f"[yellow]⚠  This will rewind mnemograph.db by {steps} commit(s).[/yellow]")
         console.print("[dim]   Audit trail will only be in git (not in events).[/dim]")
         console.print()
         if not click.confirm("Continue?", default=False):
@@ -1046,7 +1046,7 @@ def compact(ctx, delete_entity, reason, yes, as_json):
 
     Use cases:
     - Remove all traces of an entity and its relations
-    - Reduce events.jsonl size
+    - Reduce mnemograph.db size
     - Clean up after experiments
 
     CLI only — not available via MCP (user should be in the loop).
@@ -1109,7 +1109,7 @@ def compact(ctx, delete_entity, reason, yes, as_json):
     # Auto-commit to git if available
     import subprocess
     if engine._in_git_repo and engine._git_root:
-        events_path = engine.event_store.path
+        events_path = engine.event_store.db_path
         relative_path = events_path.relative_to(engine._git_root)
 
         subprocess.run(["git", "add", str(relative_path)], cwd=engine._git_root, capture_output=True)
@@ -1191,8 +1191,8 @@ def compact(ctx, delete_entity, reason, yes, as_json):
         event.ts = relation.created_at
         new_events.append(event)
 
-    # Write new events (overwrite file)
-    engine.event_store.path.write_text("")  # Clear file
+    # Write new events (clear and repopulate)
+    engine.event_store.clear()
     for event in new_events:
         engine.event_store.append(event)
 
@@ -1269,7 +1269,7 @@ def graph(ctx, export_path, with_context, open_only, watch):
         return
 
     # Load current state
-    event_store = EventStore(memory_dir / "events.jsonl")
+    event_store = EventStore(memory_dir / "mnemograph.db")
     events = event_store.read_all()
     state = materialize(events)
 
@@ -1343,7 +1343,7 @@ def graph(ctx, export_path, with_context, open_only, watch):
             def do_GET(self):
                 if self.path == "/api/graph":
                     # Re-export fresh data
-                    event_store_fresh = EventStore(memory_dir / "events.jsonl")
+                    event_store_fresh = EventStore(memory_dir / "mnemograph.db")
                     events_fresh = event_store_fresh.read_all()
                     state_fresh = materialize(events_fresh)
 

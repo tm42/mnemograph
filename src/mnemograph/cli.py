@@ -51,7 +51,7 @@ def parse_since(since_str: str) -> datetime:
 def cmd_log(args: argparse.Namespace) -> int:
     """Show event history."""
     memory_dir = Path(args.memory_path)
-    event_store = EventStore(memory_dir / "events.jsonl")
+    event_store = EventStore(memory_dir / "mnemograph.db")
     events = event_store.read_all()
 
     # Filter by since
@@ -117,7 +117,7 @@ def _summarize_event_data(event: MemoryEvent) -> str:
 def cmd_revert(args: argparse.Namespace) -> int:
     """Revert events by emitting compensating events."""
     memory_dir = Path(args.memory_path)
-    event_store = EventStore(memory_dir / "events.jsonl")
+    event_store = EventStore(memory_dir / "mnemograph.db")
     events = event_store.read_all()
 
     # Find events to revert
@@ -224,7 +224,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"Memory directory does not exist: {memory_dir}")
         return 1
 
-    event_store = EventStore(memory_dir / "events.jsonl")
+    event_store = EventStore(memory_dir / "mnemograph.db")
     events = event_store.read_all()
     state = materialize(events)
 
@@ -263,7 +263,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_sessions(args: argparse.Namespace) -> int:
     """List all sessions with event counts."""
     memory_dir = Path(args.memory_path)
-    event_store = EventStore(memory_dir / "events.jsonl")
+    event_store = EventStore(memory_dir / "mnemograph.db")
     events = event_store.read_all()
 
     if not events:
@@ -384,7 +384,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         print(f"Memory directory does not exist: {memory_dir}", file=sys.stderr)
         return 1
 
-    event_store = EventStore(memory_dir / "events.jsonl")
+    event_store = EventStore(memory_dir / "mnemograph.db")
     events = event_store.read_all()
     state = materialize(events)
 

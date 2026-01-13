@@ -292,11 +292,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="read_graph",
-            description="Read the entire knowledge graph. WARNING: May return large amounts of data. Use recall() for controlled retrieval.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
             name="recall",
             description=(
                 "PRIMARY RETRIEVAL TOOL. Get relevant context with automatic token management. "
@@ -597,8 +592,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="reload",
             description=(
-                "Reload graph state from events.jsonl on disk. "
-                "Use after: git operations (checkout, restore), external edits to events.jsonl, "
+                "Reload graph state from mnemograph.db on disk. "
+                "Use after: git operations (checkout, restore), external edits to mnemograph.db, "
                 "or any time MCP server seems out of sync."
             ),
             inputSchema={"type": "object", "properties": {}},
@@ -615,7 +610,7 @@ async def list_tools() -> list[Tool]:
                     "steps": {
                         "type": "integer",
                         "default": 1,
-                        "description": "Go back N commits that touched events.jsonl",
+                        "description": "Go back N commits that touched mnemograph.db",
                     },
                     "to_commit": {
                         "type": "string",
@@ -821,10 +816,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "delete_observations":
             count = engine.delete_observations(arguments["deletions"])
             return [TextContent(type="text", text=f"Deleted {count} observations")]
-
-        elif name == "read_graph":
-            result = engine.read_graph()
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "recall":
             result = engine.recall(

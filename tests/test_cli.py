@@ -68,7 +68,7 @@ def test_cmd_log_empty():
     with tempfile.TemporaryDirectory() as tmpdir:
         Path(tmpdir).mkdir(parents=True, exist_ok=True)
         # Create empty events file
-        (Path(tmpdir) / "events.jsonl").touch()
+        (Path(tmpdir) / "mnemograph.db").touch()
 
         args = Args(
             memory_path=tmpdir,
@@ -169,7 +169,7 @@ def test_cmd_revert_session():
         ])
 
         # Verify entity exists
-        event_store = EventStore(Path(tmpdir) / "events.jsonl")
+        event_store = EventStore(Path(tmpdir) / "mnemograph.db")
         events_before = event_store.read_all()
         state_before = materialize(events_before)
         assert len(state_before.entities) == 1
@@ -199,7 +199,7 @@ def test_cmd_revert_specific_event():
             {"name": "Entity B", "entityType": "concept"},
         ])
 
-        event_store = EventStore(Path(tmpdir) / "events.jsonl")
+        event_store = EventStore(Path(tmpdir) / "mnemograph.db")
         events = event_store.read_all()
         # Get the first create_entity event
         first_event = events[0]

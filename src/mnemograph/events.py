@@ -1,144 +1,251 @@
-"""Append-only event store.
+"""Append-only event store backed by SQLite.
 
 The event log is the source of truth. State is derived by replaying events.
+SQLite prevents agents from reading raw data via cat/Read.
 """
 
-import logging
-import os
-from contextlib import contextmanager
-from pathlib import Path
+from __future__ import annotations
 
-from .models import MemoryEvent
+import json
+import logging
+import sqlite3
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import MemoryEvent
 
 logger = logging.getLogger(__name__)
 
-# Platform-specific locking
-try:
-    import fcntl
-
-    HAS_FCNTL = True
-except ImportError:
-    HAS_FCNTL = False  # Windows fallback
-
 
 class EventStore:
-    """Append-only event log backed by a JSONL file."""
+    """Append-only event log backed by SQLite."""
 
-    def __init__(self, path: Path):
-        self.path = path
-        self._lock_path = path.with_suffix(".lock")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db_path: Path):
+        """Initialize event store.
 
-    @contextmanager
-    def _write_lock(self):
-        """Acquire exclusive write lock (Unix only, no-op on Windows)."""
-        if not HAS_FCNTL:
-            # Windows: skip locking with warning on first use
-            yield
-            return
+        Args:
+            db_path: Path to mnemograph.db (shared with vectors)
+        """
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn: sqlite3.Connection | None = None
+        self._init_db()
 
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get or create database connection."""
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn.row_factory = sqlite3.Row
+        return self._conn
 
-        with open(self._lock_path, "w") as lock_file:
-            try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                yield
-            except BlockingIOError:
-                raise RuntimeError(
-                    "Another process is writing to the event log. "
-                    "Wait for it to complete or check for stale locks."
-                )
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    def _init_db(self):
+        """Initialize database schema."""
+        conn = self._get_conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                ts TEXT NOT NULL,
+                op TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                data TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+            CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+            CREATE INDEX IF NOT EXISTS idx_events_op ON events(op);
+        """)
+        conn.commit()
 
     def append(self, event: MemoryEvent, durable: bool = True) -> MemoryEvent:
-        """Append event to log with durability guarantees.
+        """Append event to log.
 
         Args:
             event: Event to append
-            durable: If True, fsync after write. Set False for batch operations.
+            durable: If True, commit immediately. Set False for batch operations.
         """
-        with self._write_lock():
-            # Serialize once, write atomically
-            line = event.model_dump_json() + "\n"
+        from .models import MemoryEvent as ME  # Avoid circular import
 
-            with open(self.path, "a") as f:
-                f.write(line)
-                if durable:
-                    f.flush()
-                    os.fsync(f.fileno())
-
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT INTO events (id, ts, op, session_id, source, data)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id,
+                event.ts.isoformat() if hasattr(event.ts, 'isoformat') else str(event.ts),
+                event.op,
+                event.session_id,
+                event.source,
+                json.dumps(event.data),
+            ),
+        )
+        if durable:
+            conn.commit()
         return event
 
     def append_batch(self, events: list[MemoryEvent]) -> list[MemoryEvent]:
-        """Append multiple events with single fsync at end."""
+        """Append multiple events with single commit at end."""
         if not events:
             return events
 
-        with self._write_lock():
-            with open(self.path, "a") as f:
-                for event in events:
-                    f.write(event.model_dump_json() + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-
+        conn = self._get_conn()
+        for event in events:
+            conn.execute(
+                """
+                INSERT INTO events (id, ts, op, session_id, source, data)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.id,
+                    event.ts.isoformat() if hasattr(event.ts, 'isoformat') else str(event.ts),
+                    event.op,
+                    event.session_id,
+                    event.source,
+                    json.dumps(event.data),
+                ),
+            )
+        conn.commit()
         return events
 
     def read_all(self, tolerant: bool = True) -> list[MemoryEvent]:
         """Read all events from log.
 
         Args:
-            tolerant: If True, skip malformed lines with warnings.
+            tolerant: If True, skip malformed rows with warnings.
                       If False, raise on first error (strict mode).
 
         Returns:
-            List of valid events. Malformed lines are skipped in tolerant mode.
+            List of valid events.
         """
-        if not self.path.exists():
-            return []
+        from .models import MemoryEvent
+
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT id, ts, op, session_id, source, data FROM events ORDER BY ts, id"
+        )
 
         events = []
         errors = []
 
-        with open(self.path, "r") as f:
-            for line_num, line in enumerate(f, start=1):
-                line = line.strip()
-                if not line:
-                    continue  # Skip blank lines
-
-                try:
-                    events.append(MemoryEvent.model_validate_json(line))
-                except Exception as e:
-                    if tolerant:
-                        errors.append((line_num, str(e), line[:100]))
-                        logger.warning(
-                            f"Skipping malformed event at line {line_num}: {e}"
-                        )
-                    else:
-                        raise ValueError(
-                            f"Malformed event at line {line_num}: {e}"
-                        ) from e
+        for row in cursor:
+            try:
+                event = MemoryEvent(
+                    id=row["id"],
+                    ts=row["ts"],
+                    op=row["op"],
+                    session_id=row["session_id"],
+                    source=row["source"],
+                    data=json.loads(row["data"]),
+                )
+                events.append(event)
+            except Exception as e:
+                if tolerant:
+                    errors.append((row["id"], str(e)))
+                    logger.warning(f"Skipping malformed event {row['id']}: {e}")
+                else:
+                    raise ValueError(f"Malformed event {row['id']}: {e}") from e
 
         if errors:
             logger.warning(
-                f"Loaded {len(events)} events, skipped {len(errors)} malformed lines"
+                f"Loaded {len(events)} events, skipped {len(errors)} malformed rows"
             )
 
         return events
 
     def read_since(self, since_id: str | None = None) -> list[MemoryEvent]:
         """Read events after a given event ID (for incremental replay)."""
-        events = self.read_all()
         if since_id is None:
-            return events
-        for i, event in enumerate(events):
-            if event.id == since_id:
-                return events[i + 1:]
-        return events  # ID not found, return all
+            return self.read_all()
+
+        from .models import MemoryEvent
+
+        conn = self._get_conn()
+
+        # Get the timestamp of the since_id event
+        cursor = conn.execute("SELECT ts FROM events WHERE id = ?", (since_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return self.read_all()  # ID not found, return all
+
+        since_ts = row["ts"]
+
+        # Get all events after that timestamp (or same ts but later id)
+        cursor = conn.execute(
+            """
+            SELECT id, ts, op, session_id, source, data FROM events
+            WHERE (ts > ?) OR (ts = ? AND id > ?)
+            ORDER BY ts, id
+            """,
+            (since_ts, since_ts, since_id),
+        )
+
+        events = []
+        for row in cursor:
+            event = MemoryEvent(
+                id=row["id"],
+                ts=row["ts"],
+                op=row["op"],
+                session_id=row["session_id"],
+                source=row["source"],
+                data=json.loads(row["data"]),
+            )
+            events.append(event)
+
+        return events
+
+    def read_by_session(self, session_id: str) -> list[MemoryEvent]:
+        """Read all events for a specific session."""
+        from .models import MemoryEvent
+
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            SELECT id, ts, op, session_id, source, data FROM events
+            WHERE session_id = ?
+            ORDER BY ts, id
+            """,
+            (session_id,),
+        )
+
+        events = []
+        for row in cursor:
+            event = MemoryEvent(
+                id=row["id"],
+                ts=row["ts"],
+                op=row["op"],
+                session_id=row["session_id"],
+                source=row["source"],
+                data=json.loads(row["data"]),
+            )
+            events.append(event)
+
+        return events
 
     def count(self) -> int:
-        """Count events without loading all into memory."""
-        if not self.path.exists():
-            return 0
-        with open(self.path, "r") as f:
-            return sum(1 for line in f if line.strip())
+        """Count events."""
+        conn = self._get_conn()
+        cursor = conn.execute("SELECT COUNT(*) FROM events")
+        return cursor.fetchone()[0]
+
+    def close(self):
+        """Close database connection."""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def get_connection(self) -> sqlite3.Connection:
+        """Get the database connection for sharing with other components."""
+        return self._get_conn()
+
+    def clear(self) -> None:
+        """Clear all events from the store.
+
+        Used for compaction and testing.
+        """
+        conn = self._get_conn()
+        conn.execute("DELETE FROM events")
+        conn.commit()

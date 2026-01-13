@@ -1,13 +1,19 @@
-"""Vector index for semantic search using sqlite-vec and sentence-transformers."""
+"""Vector index for semantic search using sqlite-vec and sentence-transformers.
+
+Uses shared SQLite database (mnemograph.db) for both events and vectors.
+"""
+
+from __future__ import annotations
 
 import hashlib
 import logging
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .models import Entity
+if TYPE_CHECKING:
+    from .models import Entity
 
 logger = logging.getLogger(__name__)
 
@@ -40,40 +46,81 @@ def _stable_hash(text: str) -> str:
 
 
 class VectorIndex:
-    """Vector similarity search backed by sqlite-vec."""
+    """Vector similarity search backed by sqlite-vec.
 
-    def __init__(self, db_path: Path, model_name: str = "all-MiniLM-L6-v2"):
-        self.db_path = db_path
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    Can use either its own connection or a shared connection from EventStore.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection | None = None,
+        model_name: str = "all-MiniLM-L6-v2",
+    ):
+        """Initialize vector index.
+
+        Args:
+            conn: Shared SQLite connection (from EventStore). If None, vector
+                  search will be unavailable until set_connection() is called.
+            model_name: Sentence transformer model to use for embeddings.
+        """
         self._model_name = model_name
         self._model = None
         self._dims: int | None = None
-        self._conn: sqlite3.Connection | None = None
+        self._conn = conn
+        self._owns_connection = False  # We don't own the shared connection
 
         # Track initialization status
         self.health = VectorHealth(status=VectorStatus.UNAVAILABLE)
         self._extension_loaded = False
         self._model_loaded = False
 
+        # If connection provided, try to load extension
+        if self._conn is not None:
+            self._try_load_extension()
+
+    def set_connection(self, conn: sqlite3.Connection) -> None:
+        """Set the shared database connection."""
+        self._conn = conn
+        self._owns_connection = False
+        self._extension_loaded = False
+        self._try_load_extension()
+
     def _try_load_extension(self) -> bool:
         """Try to load sqlite-vec extension. Returns True on success."""
         if self._extension_loaded:
             return True
 
+        if self._conn is None:
+            self.health = VectorHealth(
+                status=VectorStatus.UNAVAILABLE,
+                error="No database connection",
+            )
+            return False
+
         try:
             import sqlite_vec
 
-            conn = sqlite3.connect(str(self.db_path))
-            conn.enable_load_extension(True)
-            sqlite_vec.load(conn)
-            conn.enable_load_extension(False)
-            self._conn = conn
+            self._conn.enable_load_extension(True)
+            sqlite_vec.load(self._conn)
+            self._conn.enable_load_extension(False)
             self._extension_loaded = True
-            # Extension loaded, but still need model — set to DEGRADED until model loads
-            self.health = VectorHealth(
-                status=VectorStatus.DEGRADED,
-                error="Waiting for embedding model",
-            )
+
+            # Initialize tables (may trigger model loading via self.dims)
+            self._init_tables()
+
+            # Update health based on model status
+            if self._model_loaded:
+                self.health = VectorHealth(
+                    status=VectorStatus.READY,
+                    embedding_model=self._model_name,
+                    dimension=self._dims,
+                )
+            else:
+                # Extension loaded, but model not yet loaded
+                self.health = VectorHealth(
+                    status=VectorStatus.DEGRADED,
+                    error="Waiting for embedding model",
+                )
             return True
         except Exception as e:
             self.health = VectorHealth(
@@ -126,11 +173,9 @@ class VectorIndex:
 
     @property
     def conn(self) -> sqlite3.Connection | None:
-        """Lazy-load database connection."""
-        if self._conn is None:
-            if not self._try_load_extension():
-                return None
-            self._init_tables()
+        """Get database connection."""
+        if self._conn is not None and not self._extension_loaded:
+            self._try_load_extension()
         return self._conn
 
     def _init_tables(self):
@@ -165,7 +210,7 @@ class VectorIndex:
 
     def index_entity(self, entity: Entity) -> bool:
         """Add or update entity in vector index. Returns True if indexed."""
-        # Ensure connection is loaded
+        # Ensure connection is available
         conn = self.conn
         if conn is None:
             return False
@@ -227,6 +272,25 @@ class VectorIndex:
             if self.index_entity(entity):
                 indexed += 1
         return indexed
+
+    def invalidate(self) -> None:
+        """Invalidate the vector index, forcing reindex on next use.
+
+        Call this after reloading events from disk to ensure vectors
+        are rebuilt from the new state.
+        """
+        conn = self.conn
+        if conn is None:
+            return
+
+        # Clear all vector data
+        try:
+            conn.execute("DELETE FROM entity_vectors")
+            conn.execute("DELETE FROM entity_meta")
+            conn.commit()
+            logger.debug("Vector index invalidated")
+        except Exception as e:
+            logger.warning(f"Failed to invalidate vector index: {e}")
 
     def search(
         self, query: str, limit: int = 10, type_filter: str | None = None
@@ -298,7 +362,7 @@ class VectorIndex:
         return [(r[0], 1.0 / (1.0 + r[1])) for r in results]
 
     def close(self) -> None:
-        """Close database connection."""
-        if self._conn:
+        """Close database connection (only if we own it)."""
+        if self._conn and self._owns_connection:
             self._conn.close()
             self._conn = None

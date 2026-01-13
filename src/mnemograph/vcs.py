@@ -1,4 +1,9 @@
-"""Git operations wrapper for memory versioning."""
+"""Git operations wrapper for memory versioning.
+
+NOTE: Git integration for SQLite-based storage is limited. The database
+is tracked as a binary file. Text-based diff/status operations that
+depended on JSONL line-by-line analysis are deprecated.
+"""
 
 import json
 from datetime import datetime
@@ -14,11 +19,17 @@ from .state import materialize
 
 
 class MemoryVCS:
-    """Version control operations for memory graph."""
+    """Version control operations for memory graph.
+
+    With SQLite storage, git integration is simplified:
+    - The database is tracked as a binary blob
+    - Semantic diffs are computed from current state only
+    - Historical state requires database snapshots or event replay
+    """
 
     def __init__(self, memory_dir: Path):
         self.memory_dir = memory_dir
-        self.events_file = memory_dir / "events.jsonl"
+        self.db_file = memory_dir / "mnemograph.db"
         self.state_file = memory_dir / "state.json"
         self.gitignore_file = memory_dir / ".gitignore"
         self._repo: Optional[Repo] = None
@@ -43,10 +54,9 @@ class MemoryVCS:
 
         self.memory_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create .gitignore
+        # Create .gitignore - vectors are regenerated from events
         gitignore_content = """# Derived files (regenerate after checkout)
 state.json
-vectors.db
 *.lock
 mnemograph.log
 
@@ -56,54 +66,40 @@ __pycache__/
 """
         self.gitignore_file.write_text(gitignore_content)
 
-        # Create empty events file if not exists
-        if not self.events_file.exists():
-            self.events_file.touch()
+        # Create empty database if not exists
+        if not self.db_file.exists():
+            # Initialize empty event store (creates db)
+            EventStore(self.db_file)
 
         # Initialize repo
         self._repo = Repo.init(self.memory_dir)
-        self.repo.index.add([".gitignore", "events.jsonl"])
+        self.repo.index.add([".gitignore", "mnemograph.db"])
         self.repo.index.commit("Initialize memory repository")
 
         return True
 
     def status(self) -> dict:
-        """Get current status."""
-        # Get committed version of events.jsonl
-        try:
-            committed_content = self.repo.git.show("HEAD:events.jsonl")
-        except GitCommandError:
-            committed_content = ""
+        """Get current status.
 
-        # Get current version
-        current_content = ""
-        if self.events_file.exists():
-            current_content = self.events_file.read_text()
+        With SQLite, we can't do line-by-line comparison with git.
+        Instead, we check if the file has changed using git status.
+        """
+        # Check git status for database file
+        is_dirty = bool(self.repo.is_dirty(path="mnemograph.db"))
 
-        # Compare to determine if dirty (strip to handle trailing newline differences)
-        events_modified = committed_content.strip() != current_content.strip()
-
-        # Count uncommitted events
-        uncommitted_events = []
-        if events_modified:
-            committed_lines = set(committed_content.strip().split("\n")) if committed_content.strip() else set()
-            current_lines = set(current_content.strip().split("\n")) if current_content.strip() else set()
-
-            # New events = current - committed
-            new_lines = current_lines - committed_lines
-            for line in new_lines:
-                if line:
-                    try:
-                        uncommitted_events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
+        # Get current event count from database
+        event_count = 0
+        if self.db_file.exists():
+            event_store = EventStore(self.db_file)
+            event_count = event_store.count()
+            event_store.close()
 
         return {
             "branch": self.repo.active_branch.name,
             "commit": self.repo.head.commit.hexsha[:7] if self.repo.head.is_valid() else None,
             "commit_message": self.repo.head.commit.message.strip() if self.repo.head.is_valid() else None,
-            "uncommitted_events": uncommitted_events,
-            "is_dirty": events_modified,
+            "event_count": event_count,
+            "is_dirty": is_dirty,
         }
 
     def log(self, n: int = 10) -> list[dict]:
@@ -116,48 +112,29 @@ __pycache__/
                 "message": commit.message.strip(),
                 "author": str(commit.author),
                 "date": datetime.fromtimestamp(commit.committed_date),
-                "stats": self._get_commit_stats(commit),
             })
         return commits
 
-    def _get_commit_stats(self, commit) -> dict:
-        """Extract graph stats from commit."""
-        try:
-            events_content = self.repo.git.show(f"{commit.hexsha}:events.jsonl")
-            events = [json.loads(line) for line in events_content.strip().split("\n") if line]
-
-            entity_ids = set()
-            relation_count = 0
-
-            for event in events:
-                op = event.get("op", "")
-                if op == "create_entity":
-                    entity_ids.add(event["data"]["id"])
-                elif op == "delete_entity":
-                    entity_ids.discard(event["data"].get("id"))
-                elif op == "create_relation":
-                    relation_count += 1
-                elif op == "delete_relation":
-                    relation_count -= 1
-
-            return {"entities": len(entity_ids), "relations": max(0, relation_count)}
-        except GitCommandError:
-            return {"entities": 0, "relations": 0}
-
     def show(self, ref: str = "HEAD") -> dict:
-        """Get graph state at ref."""
-        try:
-            events_content = self.repo.git.show(f"{ref}:events.jsonl")
-        except GitCommandError:
-            events_content = ""
+        """Get graph state at ref.
 
-        events = []
-        for line in events_content.strip().split("\n"):
-            if line:
-                events.append(json.loads(line))
+        NOTE: With SQLite, we can only show current state.
+        Historical state would require keeping database snapshots.
+        """
+        if ref != "HEAD" and ref != "working":
+            return {
+                "ref": ref,
+                "error": "Historical state not available with SQLite storage. Use time-travel tools instead.",
+                "entities": {},
+                "relations": [],
+            }
 
-        typed_events = [MemoryEvent.model_validate(e) for e in events]
-        state = materialize(typed_events)
+        # Load current state
+        event_store = EventStore(self.db_file)
+        events = event_store.read_all()
+        event_store.close()
+
+        state = materialize(events)
 
         return {
             "ref": ref,
@@ -166,93 +143,61 @@ __pycache__/
         }
 
     def diff(self, ref_a: str = "HEAD", ref_b: Optional[str] = None) -> dict:
-        """Compute semantic diff between two refs."""
-        state_a = self.show(ref_a)
+        """Compute semantic diff.
 
-        if ref_b is None:
-            # Compare with working directory
-            event_store = EventStore(self.events_file)
-            events = event_store.read_all()
-            state = materialize(events)
-            state_b = {
-                "ref": "working",
-                "entities": {eid: e.model_dump(mode="json") for eid, e in state.entities.items()},
-                "relations": [r.model_dump(mode="json") for r in state.relations],
-            }
-        else:
-            state_b = self.show(ref_b)
+        NOTE: With SQLite, only working directory state is available.
+        Both refs are treated as current state.
+        """
+        # Load current state
+        event_store = EventStore(self.db_file)
+        events = event_store.read_all()
+        event_store.close()
 
-        # Compute entity diff
-        entities_a = set(state_a["entities"].keys())
-        entities_b = set(state_b["entities"].keys())
+        state = materialize(events)
 
-        added = entities_b - entities_a
-        removed = entities_a - entities_b
-        maybe_modified = entities_a & entities_b
+        current_state = {
+            "ref": "working",
+            "entities": {eid: e.model_dump(mode="json") for eid, e in state.entities.items()},
+            "relations": [r.model_dump(mode="json") for r in state.relations],
+        }
 
-        modified = set()
-        for eid in maybe_modified:
-            if state_a["entities"][eid] != state_b["entities"][eid]:
-                modified.add(eid)
-
-        # Compute relation diff (by tuple identity)
-        def rel_key(r):
-            return (r["from_entity"], r["to_entity"], r["type"])
-
-        rels_a = {rel_key(r): r for r in state_a["relations"]}
-        rels_b = {rel_key(r): r for r in state_b["relations"]}
-
-        rels_added = set(rels_b.keys()) - set(rels_a.keys())
-        rels_removed = set(rels_a.keys()) - set(rels_b.keys())
-
+        # With SQLite, we can't reconstruct historical state from git
+        # Return empty diff indicating no changes detectable
         return {
             "from": ref_a,
             "to": ref_b or "working",
             "entities": {
-                "added": {eid: state_b["entities"][eid] for eid in added},
-                "removed": {eid: state_a["entities"][eid] for eid in removed},
-                "modified": {
-                    eid: {
-                        "before": state_a["entities"][eid],
-                        "after": state_b["entities"][eid],
-                    }
-                    for eid in modified
-                },
+                "added": {},
+                "removed": {},
+                "modified": {},
             },
             "relations": {
-                "added": [rels_b[k] for k in rels_added],
-                "removed": [rels_a[k] for k in rels_removed],
+                "added": [],
+                "removed": [],
             },
+            "note": "Historical diff not available with SQLite storage. Use time-travel tools (get_state_at, diff_timerange) instead.",
         }
 
     def commit(self, message: str, auto_summary: bool = False) -> str:
-        """Commit current events."""
+        """Commit current database state."""
         # Check if there are changes to commit
         status = self.status()
         if not status["is_dirty"]:
-            raise RuntimeError("Nothing to commit (events.jsonl unchanged)")
+            raise RuntimeError("Nothing to commit (mnemograph.db unchanged)")
 
         # Generate auto-summary if requested
         if auto_summary:
-            diff = self.diff("HEAD", None)
-            summary_parts = []
-            if diff["entities"]["added"]:
-                names = [e["name"] for e in diff["entities"]["added"].values()]
-                summary_parts.append(f"+{len(names)} entities: {', '.join(names[:3])}")
-            if diff["entities"]["removed"]:
-                summary_parts.append(f"-{len(diff['entities']['removed'])} entities")
-            if diff["relations"]["added"]:
-                summary_parts.append(f"+{len(diff['relations']['added'])} relations")
+            event_store = EventStore(self.db_file)
+            event_count = event_store.count()
+            event_store.close()
+            message = f"{message}\n\n{event_count} events in database"
 
-            if summary_parts:
-                message = f"{message}\n\n{'; '.join(summary_parts)}"
-
-        self.repo.index.add(["events.jsonl"])
+        self.repo.index.add(["mnemograph.db"])
         commit = self.repo.index.commit(message)
 
         return commit.hexsha[:7]
 
-    def branch(self, name: str = None, delete: bool = False) -> list[str]:
+    def branch(self, name: Optional[str] = None, delete: bool = False) -> list[str]:
         """List, create, or delete branches."""
         if name is None:
             return [b.name for b in self.repo.branches]
@@ -274,7 +219,7 @@ __pycache__/
         self._regenerate_derived()
 
     def _regenerate_derived(self) -> None:
-        """Regenerate state.json and vectors.db from events."""
+        """Regenerate state.json from events."""
         from .engine import MemoryEngine
 
         # Re-initialize engine (will rebuild state and vector index)
