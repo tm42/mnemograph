@@ -38,24 +38,13 @@ def timeout(seconds: int):
 def _is_valid_memory_path(path: Path) -> bool:
     """Check if a memory path is valid and usable.
 
-    A path is valid if:
-    1. It exists and contains mnemograph.db (v0.4.0+) or events.jsonl (legacy)
-    2. The mnemograph engine can actually load it (passes git validation)
+    A path is valid if it exists and contains mnemograph.db (v0.4.0+) or events.jsonl (legacy).
+    We don't try to init the engine here since the hook may run without mnemograph installed.
     """
     if not path.exists():
         return False
     # Check for v0.4.0+ SQLite format or legacy JSONL
-    if not (path / "mnemograph.db").exists() and not (path / "events.jsonl").exists():
-        return False
-
-    # Try to actually initialize the engine to validate git setup
-    try:
-        from mnemograph.engine import MemoryEngine
-        # This will raise if git validation fails
-        MemoryEngine(path, "validation-check")
-        return True
-    except Exception:
-        return False
+    return (path / "mnemograph.db").exists() or (path / "events.jsonl").exists()
 
 
 def detect_memory_path(cwd: str | Path | None = None) -> Path | None:

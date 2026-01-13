@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mnemograph",
+  "owner": {
+    "name": "tm42",
+    "email": "tm42@users.noreply.github.com"
+  },
+  "metadata": {
+    "description": "Mnemograph Claude Code plugin with memory subagents and hooks",
+    "version": "0.4.0"
+  },
+  "plugins": [
+    {
+      "name": "mnemograph",
+      "description": "Persistent memory for Claude Code sessions via mnemograph knowledge graph",
+      "version": "0.4.0",
+      "author": {
+        "name": "tm42"
+      },
+      "source": "./mnemograph-claude-code",
+      "category": "memory",
+      "tags": ["memory", "knowledge-graph", "persistence"]
+    }
+  ]
+}
