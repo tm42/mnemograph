@@ -14,6 +14,8 @@ from .models import Entity, MemoryEvent, Observation, Relation
 from .state import GraphState, materialize, materialize_at, apply_event
 from .timeutil import parse_time_reference
 from .branches import BranchManager
+from .similarity import SimilarityChecker
+from .time_travel import TimeTraveler
 
 # --- Constants ---
 # Default limits for queries
@@ -371,6 +373,12 @@ class MemoryEngine:
         self._co_access_cache_path = memory_dir / "co_access_cache.json"
         self._load_co_access_cache()
 
+        # Similarity checker (uses lazy-loaded vector index)
+        self._similarity: SimilarityChecker | None = None
+
+        # Time traveler (uses event store)
+        self._time_traveler: TimeTraveler | None = None
+
         # Branch manager - provides filtered views of the graph
         self._branch_manager: BranchManager | None = None
 
@@ -387,6 +395,24 @@ class MemoryEngine:
         if self._branch_manager is None:
             self._branch_manager = BranchManager(self.memory_dir, lambda: self.state)
         return self._branch_manager
+
+    @property
+    def similarity(self) -> SimilarityChecker:
+        """Lazy-load similarity checker."""
+        if self._similarity is None:
+            # Pass lambda so vector index is only loaded when actually needed
+            self._similarity = SimilarityChecker(lambda: self.vector_index)
+        return self._similarity
+
+    @property
+    def time_traveler(self) -> TimeTraveler:
+        """Lazy-load time traveler."""
+        if self._time_traveler is None:
+            self._time_traveler = TimeTraveler(
+                lambda: self.event_store,
+                self._emit,
+            )
+        return self._time_traveler
 
     def get_active_state(self) -> GraphState:
         """Get state filtered to current branch.
@@ -1395,165 +1421,30 @@ class MemoryEngine:
 
         return "\n".join(lines)
 
-    # --- Event Rewind ---
+    # --- Event Rewind (delegated to TimeTraveler) ---
 
     def state_at(self, timestamp: str | datetime) -> GraphState:
         """Get graph state at a specific point in time.
 
-        Args:
-            timestamp: ISO datetime string, relative reference ("7 days ago"),
-                       or datetime object (will be treated as UTC if naive)
-
-        Returns:
-            GraphState as it existed at that timestamp
+        Delegates to TimeTraveler.
         """
-        if isinstance(timestamp, str):
-            ts = parse_time_reference(timestamp)
-        else:
-            ts = timestamp
-            # Ensure timezone-aware (assume UTC if naive)
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-
-        events = self.event_store.read_all()
-        return materialize_at(events, ts)
+        return self.time_traveler.state_at(timestamp)
 
     def events_between(
         self,
         start: str | datetime,
         end: str | datetime | None = None,
     ) -> list[MemoryEvent]:
-        """Get events in a time range.
-
-        Args:
-            start: Start time (ISO string, relative reference, or datetime)
-            end: End time (default: now)
-
-        Returns:
-            List of events in the range
-        """
-        if isinstance(start, str):
-            start_ts = parse_time_reference(start)
-        else:
-            start_ts = start
-
-        if end is None:
-            end_ts = datetime.now(timezone.utc)
-        elif isinstance(end, str):
-            end_ts = parse_time_reference(end)
-        else:
-            end_ts = end
-
-        events = self.event_store.read_all()
-        return [e for e in events if start_ts <= e.ts <= end_ts]
+        """Get events in a time range. Delegates to TimeTraveler."""
+        return self.time_traveler.events_between(start, end)
 
     def diff_between(
         self,
         start: str | datetime,
         end: str | datetime | None = None,
     ) -> dict:
-        """Compute what changed between two points in time.
-
-        Args:
-            start: Start time
-            end: End time (default: now)
-
-        Returns:
-            Dict with entities (added/removed/modified) and relations (added/removed)
-        """
-        if isinstance(start, str):
-            start_ts = parse_time_reference(start)
-        else:
-            start_ts = start
-
-        if end is None:
-            end_ts = datetime.now(timezone.utc)
-        elif isinstance(end, str):
-            end_ts = parse_time_reference(end)
-        else:
-            end_ts = end
-
-        events = self.event_store.read_all()
-        state_start = materialize_at(events, start_ts)
-        state_end = materialize_at(events, end_ts)
-
-        return {
-            "start_timestamp": start_ts.isoformat(),
-            "end_timestamp": end_ts.isoformat(),
-            "entities": self._diff_entities(state_start, state_end),
-            "relations": self._diff_relations(state_start, state_end),
-            "event_count": len([e for e in events if start_ts < e.ts <= end_ts]),
-        }
-
-    def _diff_entities(self, old: GraphState, new: GraphState) -> dict:
-        """Compute entity differences between two states."""
-        old_ids = set(old.entities.keys())
-        new_ids = set(new.entities.keys())
-
-        added_ids = new_ids - old_ids
-        removed_ids = old_ids - new_ids
-        common_ids = old_ids & new_ids
-
-        # Check for modifications in common entities
-        modified = []
-        for eid in common_ids:
-            old_entity = old.entities[eid]
-            new_entity = new.entities[eid]
-
-            changes = self._entity_changes(old_entity, new_entity)
-            if changes:
-                modified.append({
-                    "id": eid,
-                    "name": new_entity.name,
-                    "changes": changes,
-                })
-
-        return {
-            "added": [new.entities[eid].to_summary() for eid in added_ids],
-            "removed": [old.entities[eid].to_summary() for eid in removed_ids],
-            "modified": modified,
-        }
-
-    def _entity_changes(self, old: Entity, new: Entity) -> dict:
-        """Compute specific changes between two entity versions."""
-        changes = {}
-
-        if old.name != new.name:
-            changes["name"] = {"old": old.name, "new": new.name}
-        if old.type != new.type:
-            changes["type"] = {"old": old.type, "new": new.type}
-
-        # Check observations
-        old_obs_ids = {o.id for o in old.observations}
-        new_obs_ids = {o.id for o in new.observations}
-
-        added_obs = new_obs_ids - old_obs_ids
-        removed_obs = old_obs_ids - new_obs_ids
-
-        if added_obs or removed_obs:
-            changes["observations"] = {
-                "added": len(added_obs),
-                "removed": len(removed_obs),
-            }
-
-        return changes
-
-    def _diff_relations(self, old: GraphState, new: GraphState) -> dict:
-        """Compute relation differences between two states."""
-        old_ids = {r.id for r in old.relations}
-        new_ids = {r.id for r in new.relations}
-
-        added_ids = new_ids - old_ids
-        removed_ids = old_ids - new_ids
-
-        # Build lookup maps
-        new_by_id = {r.id: r for r in new.relations}
-        old_by_id = {r.id: r for r in old.relations}
-
-        return {
-            "added": [new_by_id[rid].to_summary() for rid in added_ids],
-            "removed": [old_by_id[rid].to_summary() for rid in removed_ids],
-        }
+        """Compute what changed between two points in time. Delegates to TimeTraveler."""
+        return self.time_traveler.diff_between(start, end)
 
     def get_entity_history(self, entity_name: str) -> list[dict]:
         """Get the history of changes to an entity.
@@ -1563,24 +1454,7 @@ class MemoryEngine:
         entity_id = self._resolve_entity(entity_name)
         if not entity_id:
             return []
-
-        events = self.event_store.read_all()
-
-        relevant = [
-            e for e in events
-            if e.data.get("id") == entity_id
-            or e.data.get("entity_id") == entity_id
-        ]
-
-        return [
-            {
-                "timestamp": e.ts.isoformat(),
-                "operation": e.op,
-                "session_id": e.session_id,
-                "data": e.data,
-            }
-            for e in relevant
-        ]
+        return self.time_traveler.get_entity_history(entity_id)
 
     # --- Edge Weights ---
 
@@ -2112,70 +1986,19 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
     def restore_state_at(self, timestamp: str, reason: str = "") -> dict:
         """Restore graph to state at a specific timestamp.
 
-        Unlike rewind() which uses git, this:
-        1. Materializes state at that timestamp
-        2. Emits clear_graph event
-        3. Emits events to recreate that state
-
-        Full audit trail preserved — events show the restore happened.
-
-        Args:
-            timestamp: ISO format or relative ("2 hours ago", "yesterday")
-            reason: Why restoring (recorded in clear event)
-
-        Returns:
-            Status with entity/relation counts after restore
+        Delegates to TimeTraveler. Emits events to recreate past state
+        with full audit trail preserved.
         """
-        # Parse timestamp
-        ts = parse_time_reference(timestamp)
-
-        # Get past state
-        events = self.event_store.read_all()
-        past_state = materialize_at(events, ts)
-
-        if not past_state.entities:
-            return {
-                "status": "error",
-                "error": f"No entities found at {timestamp}",
-                "tip": "Use get_state_at() to preview state before restoring.",
-            }
-
-        # Clear current graph (recorded in events)
-        clear_reason = f"Restoring to {timestamp}"
-        if reason:
-            clear_reason += f": {reason}"
-        self._emit("clear_graph", {"reason": clear_reason})
-
-        # Recreate entities from past state (recorded in events)
-        for entity in past_state.entities.values():
-            # Emit create_entity with original data
-            entity_data = entity.model_dump(mode="json")
-            self._emit("create_entity", entity_data)
-
-        # Recreate relations from past state
-        for relation in past_state.relations:
-            relation_data = relation.model_dump(mode="json")
-            self._emit("create_relation", relation_data)
-
-        return {
-            "status": "restored",
-            "restored_to": timestamp,
-            "resolved_timestamp": ts.isoformat(),
-            "entities": len(self.state.entities),
-            "relations": len(self.state.relations),
-            "note": "Full audit trail preserved in events.",
-        }
+        return self.time_traveler.restore_state_at(
+            timestamp, reason, lambda: self.state
+        )
 
     # --- Graph Coherence Tools ---
 
     def find_similar(self, name: str, threshold: float = DEFAULT_SIMILARITY_THRESHOLD) -> list[dict]:
         """Find entities with similar names (potential duplicates).
 
-        Uses combination of:
-        - Substring containment (React in ReactJS)
-        - Jaccard similarity on tokens
-        - Prefix/suffix matching
-        - Semantic similarity from embeddings
+        Delegates to SimilarityChecker for consistent similarity scoring.
 
         Args:
             name: Entity name to check
@@ -2184,67 +2007,7 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
         Returns:
             List of similar entities with similarity scores, sorted by score
         """
-        results = []
-        name_lower = name.lower().strip()
-        name_tokens = set(name_lower.split())
-
-        for eid, entity in self.state.entities.items():
-            entity_lower = entity.name.lower()
-
-            # Skip exact matches
-            if entity_lower == name_lower:
-                continue
-
-            entity_tokens = set(entity_lower.split())
-
-            # 1. Substring containment (strong signal for "React" in "ReactJS")
-            substring_score = 0.0
-            if name_lower in entity_lower or entity_lower in name_lower:
-                # Longer substring relative to total length = higher score
-                shorter = min(len(name_lower), len(entity_lower))
-                longer = max(len(name_lower), len(entity_lower))
-                substring_score = shorter / longer  # e.g., "React"(5) in "ReactJS"(7) = 0.71
-
-            # 2. Jaccard similarity on tokens (for multi-word names)
-            intersection = len(name_tokens & entity_tokens)
-            union = len(name_tokens | entity_tokens)
-            jaccard = intersection / union if union > 0 else 0
-
-            # 3. Prefix/suffix matching bonus
-            prefix_match = name_lower.startswith(entity_lower) or entity_lower.startswith(name_lower)
-            suffix_match = name_lower.endswith(entity_lower) or entity_lower.endswith(name_lower)
-            affix_bonus = AFFIX_MATCH_BONUS if (prefix_match or suffix_match) else 0
-
-            # 4. Embedding similarity (uses lazy-loaded vector_index)
-            embedding_sim = 0.0
-            try:
-                search_results = self.vector_index.search(name, limit=DEFAULT_VECTOR_SEARCH_LIMIT)
-                for result_id, score in search_results:
-                    if result_id == eid:
-                        embedding_sim = score
-                        break
-            except Exception as e:
-                logger.debug(f"Embedding similarity lookup failed (using text-based only): {e}")
-
-            # Combined score - use max of different approaches, then add capped bonus
-            # This handles different cases well:
-            # - "React" vs "ReactJS": substring_score dominates
-            # - "React Native" vs "React": jaccard high
-            # - Completely different names: embedding_sim dominates
-            # BUG FIX: Previously could exceed 1.0. Now use raw max + capped bonus.
-            base_similarity = max(substring_score, jaccard, embedding_sim)
-            similarity = min(base_similarity + affix_bonus * 0.1, 1.0)
-
-            if similarity >= threshold:
-                results.append({
-                    "id": eid,
-                    "name": entity.name,
-                    "type": entity.type,
-                    "similarity": round(similarity, 2),
-                    "observation_count": len(entity.observations),
-                })
-
-        return sorted(results, key=lambda x: x["similarity"], reverse=True)
+        return self.similarity.find_similar(name, self.state, threshold)
 
     def find_orphans(self) -> list[dict]:
         """Find entities with no relations (likely incomplete).
