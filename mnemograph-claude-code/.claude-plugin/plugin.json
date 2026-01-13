@@ -1,0 +1,8 @@
+{
+  "name": "mnemograph",
+  "version": "0.3.0",
+  "description": "Persistent memory for Claude Code sessions via mnemograph knowledge graph",
+  "author": "tm42",
+  "homepage": "https://github.com/tm42/mnemograph",
+  "hooks": "hooks/hooks.json"
+}

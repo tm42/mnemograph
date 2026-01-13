@@ -1,0 +1,13 @@
+{
+  "name": "mnemograph-local",
+  "description": "Local marketplace for mnemograph plugin development",
+  "plugins": [
+    {
+      "id": "mnemograph",
+      "source": {
+        "source": "directory",
+        "path": "/Users/tm42/_mnemograph/mnemograph-claude-code"
+      }
+    }
+  ]
+}
