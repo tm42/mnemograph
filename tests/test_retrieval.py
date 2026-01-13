@@ -140,3 +140,173 @@ def test_invalid_depth():
             assert False, "Should have raised ValueError"
         except ValueError as e:
             assert "Invalid depth" in str(e)
+
+
+def test_shallow_context_frequently_accessed():
+    """Test shallow context shows frequently accessed entities."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        engine.create_entities([
+            {"name": "Popular", "entityType": "concept", "observations": ["Popular entity"]},
+            {"name": "Other", "entityType": "concept", "observations": ["Regular entity"]},
+        ])
+
+        # Manually increment access count to test the display
+        for entity in engine.state.entities.values():
+            if entity.name == "Popular":
+                entity.access_count = 5
+                break
+
+        result = engine.recall(depth="shallow", format="graph")
+
+        # Should show frequently accessed section
+        assert "Frequently Accessed" in result["content"]
+        assert "Popular" in result["content"]
+        assert "5 accesses" in result["content"]
+
+
+def test_deep_context_no_focus_uses_recent():
+    """Test deep context uses recent entities when no focus provided."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        engine.create_entities([
+            {"name": "Recent1", "entityType": "concept", "observations": ["Recent entity 1"]},
+            {"name": "Recent2", "entityType": "concept", "observations": ["Recent entity 2"]},
+        ])
+
+        # Call without focus - should use recent entities as seeds
+        result = engine.recall(depth="deep")
+
+        assert result["depth"] == "deep"
+        assert result["entity_count"] >= 1
+        # Should find recent entities
+        assert "Recent1" in result["content"] or "Recent2" in result["content"]
+
+
+def test_format_entities_empty():
+    """Test _format_entities_with_relations with no entities."""
+    from mnemograph.retrieval import _format_entities_with_relations
+    from mnemograph.state import GraphState
+
+    state = GraphState()
+    result = _format_entities_with_relations(state, [], set(), 2000)
+
+    assert result == "No matching entities found."
+
+
+def test_format_entities_many_observations():
+    """Test _format_entities_with_relations truncates observations."""
+    from mnemograph.retrieval import _format_entities_with_relations
+    from mnemograph.state import GraphState
+    from mnemograph.models import Entity, Observation
+    from datetime import datetime, timezone
+
+    state = GraphState()
+
+    # Create entity with many observations
+    now = datetime.now(timezone.utc)
+    observations = [
+        Observation(id=f"o{i}", text=f"Observation {i}", ts=now, source="test")
+        for i in range(10)
+    ]
+    entity = Entity(
+        id="e1",
+        name="TestEntity",
+        type="concept",
+        observations=observations,
+        created_at=now,
+        updated_at=now,
+        created_by="test",
+        access_count=0,
+    )
+    state.entities["e1"] = entity
+
+    # Non-verbose should show truncation notice
+    result = _format_entities_with_relations(state, [entity], {"e1"}, 2000, verbose=False)
+
+    assert "7 more observations" in result  # 10 total, shows 3, so 7 more
+
+
+def test_format_entities_truncation():
+    """Test _format_entities_with_relations truncates when over token budget."""
+    from mnemograph.retrieval import _format_entities_with_relations
+    from mnemograph.state import GraphState
+    from mnemograph.models import Entity, Observation
+    from datetime import datetime, timezone
+
+    state = GraphState()
+    now = datetime.now(timezone.utc)
+
+    # Create many entities with observations
+    entities = []
+    for i in range(20):
+        observations = [
+            Observation(id=f"o{i}_{j}", text=f"Long observation text " * 20, ts=now, source="test")
+            for j in range(5)
+        ]
+        entity = Entity(
+            id=f"e{i}",
+            name=f"Entity{i}",
+            type="concept",
+            observations=observations,
+            created_at=now,
+            updated_at=now,
+            created_by="test",
+            access_count=0,
+        )
+        state.entities[f"e{i}"] = entity
+        entities.append(entity)
+
+    # Request with very small token budget
+    result = _format_entities_with_relations(state, entities, {f"e{i}" for i in range(20)}, 100)
+
+    # Should be truncated
+    assert "truncated" in result.lower()
+
+
+def test_medium_context_no_focus_no_query():
+    """Test medium context with neither focus nor query."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        engine.create_entities([
+            {"name": "Entity1", "entityType": "concept", "observations": ["First entity"]},
+            {"name": "Entity2", "entityType": "concept", "observations": ["Second entity"]},
+        ])
+
+        # Call with neither focus nor query - relies on weighted_bfs with empty seeds
+        result = engine.recall(depth="medium")
+
+        assert result["depth"] == "medium"
+        # Should return something (implementation-dependent)
+
+
+def test_format_with_relations():
+    """Test _format_entities_with_relations shows relations."""
+    from mnemograph.retrieval import _format_entities_with_relations
+    from mnemograph.state import GraphState
+    from mnemograph.models import Entity, Relation
+    from datetime import datetime, timezone
+
+    state = GraphState()
+    now = datetime.now(timezone.utc)
+
+    # Create two entities with a relation
+    e1 = Entity(id="e1", name="Source", type="concept", observations=[],
+                created_at=now, updated_at=now, created_by="test", access_count=0)
+    e2 = Entity(id="e2", name="Target", type="concept", observations=[],
+                created_at=now, updated_at=now, created_by="test", access_count=0)
+    state.entities["e1"] = e1
+    state.entities["e2"] = e2
+
+    rel = Relation(id="r1", from_entity="e1", to_entity="e2", type="links_to",
+                   created_at=now, created_by="test")
+    state.relations.append(rel)
+
+    result = _format_entities_with_relations(state, [e1, e2], {"e1", "e2"}, 2000)
+
+    # Should show relation arrows
+    assert "→" in result or "←" in result
+    assert "links_to" in result

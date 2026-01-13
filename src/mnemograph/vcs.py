@@ -68,7 +68,8 @@ __pycache__/
         # Create empty database if not exists
         if not self.db_file.exists():
             # Initialize empty event store (creates db)
-            EventStore(self.db_file)
+            event_store = EventStore(self.db_file)
+            event_store.close()  # Checkpoint WAL and close connection
 
         # Initialize repo
         self._repo = Repo.init(self.memory_dir)

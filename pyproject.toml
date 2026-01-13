@@ -30,12 +30,29 @@ Repository = "https://github.com/tm42/mnemograph"
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
     "ruff>=0.14.11",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/mnemograph"]
+omit = [
+    "src/mnemograph/cli.py",      # CLI commands - tested via integration
+    "src/mnemograph/server.py",   # MCP server - tested via integration
+    "src/mnemograph/__main__.py", # Entry point
+]
+
+[tool.coverage.report]
+fail_under = 75
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
 
 [tool.ruff]
 line-length = 100
