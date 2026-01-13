@@ -1,9 +1,10 @@
 {
-  "name": "mnemograph",
+  "name": "memory-agents",
   "version": "0.4.0",
   "description": "Persistent memory for Claude Code sessions via mnemograph knowledge graph",
-  "author": "tm42",
-  "homepage": "https://github.com/tm42/mnemograph",
-  "hooks": "hooks/hooks.json",
-  "agents": "agents/"
+  "author": {
+    "name": "tm42",
+    "email": "tm42@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/tm42/mnemograph"
 }
