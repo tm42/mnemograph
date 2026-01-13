@@ -576,6 +576,7 @@ async def list_tools() -> list[Tool]:
             name="clear_graph",
             description=(
                 "Clear ALL entities and relations from the graph. Use sparingly! "
+                "For graphs with >10 entities: requires reason AND confirm_token. "
                 "Event-sourced: can rewind to before clear with get_state_at(timestamp)."
             ),
             inputSchema={
@@ -583,7 +584,11 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "reason": {
                         "type": "string",
-                        "description": "Optional reason for clearing (recorded in event history)",
+                        "description": "Reason for clearing (required for graphs >10 entities)",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Confirmation token for large graphs (format: CLEAR_<count>)",
                     },
                 },
             },
@@ -930,7 +935,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "clear_graph":
-            result = engine.clear_graph(reason=arguments.get("reason", ""))
+            result = engine.clear_graph(
+                reason=arguments.get("reason"),
+                confirm_token=arguments.get("confirm_token"),
+            )
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         # --- Recovery Tools ---

@@ -411,9 +411,11 @@ def test_get_graph_health_detects_issues():
         ])
 
         # Create potential duplicates (use force to bypass auto-check)
+        # Use names that are similar enough to trigger duplicate detection (>0.8)
+        # "Test Entity" and "Test Entity v2" have high substring overlap
         engine.create_entities_force([
-            {"name": "React", "entityType": "concept"},
-            {"name": "ReactJS", "entityType": "concept"},
+            {"name": "Test Entity", "entityType": "concept"},
+            {"name": "Test Entity v2", "entityType": "concept"},  # High overlap
         ])
 
         result = engine.get_graph_health()
@@ -421,7 +423,7 @@ def test_get_graph_health_detects_issues():
         assert result["summary"]["total_entities"] == 3
         # All are orphans since no relations
         assert result["summary"]["orphan_count"] == 3
-        # Should detect React/ReactJS as potential duplicates
+        # Should detect Test Entity/Test Entity v2 as potential duplicates
         assert result["summary"]["duplicate_groups"] >= 1
 
 
@@ -578,25 +580,25 @@ def test_clear_graph_clears_indices():
 
 
 def test_create_entities_blocks_duplicate():
-    """Test create_entities blocks when similar entity exists."""
+    """Test create_entities blocks when similar entity exists (>80% similarity)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
         # Create initial entity
         engine.create_entities([
-            {"name": "React", "entityType": "concept"},
+            {"name": "Test Entity", "entityType": "concept"},
         ])
 
-        # Try to create similar entity - should be blocked
+        # Try to create similar entity - should be blocked (81% similarity)
         results = engine.create_entities([
-            {"name": "ReactJS", "entityType": "concept"},
+            {"name": "Test Entity v2", "entityType": "concept"},
         ])
 
         assert len(results) == 1
         assert isinstance(results[0], dict)
         assert results[0]["status"] == "duplicate_warning"
-        assert "React" in results[0]["warning"]
-        assert results[0]["name"] == "ReactJS"
+        assert "Test Entity" in results[0]["warning"]
+        assert results[0]["name"] == "Test Entity v2"
 
         # Verify entity was NOT created
         assert len(engine.state.entities) == 1
@@ -658,12 +660,12 @@ def test_create_entities_mixed_results():
 
         # Create initial entity
         engine.create_entities([
-            {"name": "React", "entityType": "concept"},
+            {"name": "Test Entity", "entityType": "concept"},
         ])
 
-        # Try to create one similar, one distinct
+        # Try to create one similar (>80%), one distinct
         results = engine.create_entities([
-            {"name": "ReactJS", "entityType": "concept"},  # Should be blocked
+            {"name": "Test Entity v2", "entityType": "concept"},  # Should be blocked (81%)
             {"name": "Angular", "entityType": "concept"},  # Should succeed
         ])
 
@@ -678,10 +680,10 @@ def test_create_entities_mixed_results():
         assert isinstance(results[1], Entity)
         assert results[1].name == "Angular"
 
-        # Verify correct entities exist (React and Angular, not ReactJS)
+        # Verify correct entities exist (Test Entity and Angular, not Test Entity v2)
         assert len(engine.state.entities) == 2
         names = {e.name for e in engine.state.entities.values()}
-        assert names == {"React", "Angular"}
+        assert names == {"Test Entity", "Angular"}
 
 
 # --- Remember (High-Level Knowledge Creation) Tests ---
@@ -760,24 +762,24 @@ def test_remember_handles_missing_relation_target():
 
 
 def test_remember_blocks_duplicate():
-    """Test remember blocks when similar entity exists."""
+    """Test remember blocks when similar entity exists (>80% similarity)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
         # Create initial entity
         engine.create_entities([
-            {"name": "React", "entityType": "concept"},
+            {"name": "Test Entity", "entityType": "concept"},
         ])
 
-        # Try to remember similar entity
+        # Try to remember similar entity (81% similarity)
         result = engine.remember(
-            name="ReactJS",
+            name="Test Entity v2",
             entity_type="concept",
-            observations=["JavaScript library"],
+            observations=["Similar concept"],
         )
 
         assert result["status"] == "duplicate_warning"
-        assert "React" in result["warning"]
+        assert "Test Entity" in result["warning"]
         assert "suggestion" in result
 
         # Verify entity was NOT created

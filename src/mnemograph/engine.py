@@ -38,16 +38,14 @@ SUGGEST_RELATION_CONFIDENCE_THRESHOLD = 0.4
 # Health check limits
 OVERLOADED_ENTITY_OBSERVATION_LIMIT = 15
 HEALTH_REPORT_ITEM_LIMIT = 10
+MAX_OBSERVATION_TOKENS = 2000  # Soft limit with warning guidance
 
 # Suggestion confidence scores
 CO_OCCURRENCE_CONFIDENCE = 0.7
 SHARED_RELATION_CONFIDENCE = 0.65
 
-# Similarity calculation weights
-SUBSTRING_SIMILARITY_WEIGHT = 0.9
-TOKEN_SIMILARITY_WEIGHT = 0.8
-EMBEDDING_SIMILARITY_WEIGHT = 0.8
-AFFIX_MATCH_BONUS = 0.2
+# Similarity calculation: affix bonus scaled down to prevent overflow
+AFFIX_MATCH_BONUS = 0.2  # Applied as bonus * 0.1 = max 0.02 boost
 
 # --- Bootstrap Guide Data ---
 # Seeded into empty global memory to teach agents how to use mnemograph
@@ -722,12 +720,21 @@ class MemoryEngine:
     # --- Observation operations ---
 
     def add_observations(self, observations: list[dict]) -> list[dict]:
-        """Add observations to existing entities."""
+        """Add observations to existing entities.
+
+        Includes soft token limit warning when observations approach 2000 tokens.
+        """
         results = []
         for obs_data in observations:
             entity_id = self._resolve_entity(obs_data["entityName"])
             if entity_id:
+                entity = self.state.entities.get(entity_id)
                 added = []
+
+                # Estimate current tokens (~4 chars per token)
+                current_tokens = sum(len(o.text) // 4 for o in entity.observations) if entity else 0
+                new_tokens = sum(len(t) // 4 for t in obs_data.get("contents", []))
+
                 for content in obs_data.get("contents", []):
                     obs = Observation(text=content, source=self.session_id)
                     self._emit(
@@ -735,7 +742,20 @@ class MemoryEngine:
                         {"entity_id": entity_id, "observation": obs.model_dump(mode="json")},
                     )
                     added.append(content)
-                results.append({"entityName": obs_data["entityName"], "addedObservations": added})
+
+                result = {"entityName": obs_data["entityName"], "addedObservations": added}
+
+                # Add warning if approaching token limit
+                total_tokens = current_tokens + new_tokens
+                if total_tokens > MAX_OBSERVATION_TOKENS:
+                    result["warning"] = (
+                        f"Entity approaching token limit ({total_tokens}/{MAX_OBSERVATION_TOKENS})"
+                    )
+                    result["suggestion"] = (
+                        "Consider creating related entities or consolidating observations"
+                    )
+
+                results.append(result)
                 # Re-index entity after adding observations (text changed)
                 self.ensure_indexed(entity_id)
         return results
@@ -1930,24 +1950,47 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
             "tip": "Key learnings can be stored with create_entities or add_observations anytime.",
         }
 
-    def clear_graph(self, reason: str = "") -> dict:
+    def clear_graph(
+        self, reason: str | None = None, confirm_token: str | None = None
+    ) -> dict:
         """Clear all entities and relations from the graph.
 
         This is event-sourced — you can rewind to before the clear using
         get_state_at() with a timestamp before the clear event.
 
         Args:
-            reason: Optional reason for clearing (recorded in event)
+            reason: Reason for clearing (required for graphs with >10 entities)
+            confirm_token: Confirmation token for large graphs (format: CLEAR_<count>)
 
         Returns:
-            Confirmation with entity/relation counts cleared
+            Confirmation with entity/relation counts cleared, or error if blocked
         """
+        entity_count = len(self.state.entities)
+
+        # Require reason for non-trivial graphs
+        if entity_count > 10 and not reason:
+            return {
+                "error": "Reason required for clearing graph with >10 entities",
+                "entity_count": entity_count,
+                "hint": "Pass reason='your reason here'",
+            }
+
+        # Require confirmation token for large graphs
+        expected_token = f"CLEAR_{entity_count}"
+        if entity_count > 10 and confirm_token != expected_token:
+            return {
+                "error": "Large graph requires confirmation token",
+                "entity_count": entity_count,
+                "confirm_with": expected_token,
+                "hint": f"Pass confirm_token='{expected_token}' to proceed",
+            }
+
         counts = {
-            "entities_cleared": len(self.state.entities),
+            "entities_cleared": entity_count,
             "relations_cleared": len(self.state.relations),
         }
 
-        self._emit("clear_graph", {"reason": reason})
+        self._emit("clear_graph", {"reason": reason or ""})
 
         return {
             "status": "cleared",
@@ -1976,7 +2019,11 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
         events = self.event_store.read_all()
         self.state = materialize(events)
         self._load_co_access_cache()
-        self._vector_index = None  # Force rebuild on next semantic search
+
+        # Invalidate vector index to force reindex from new state
+        if self._vector_index is not None:
+            self._vector_index.invalidate()
+        self._vector_index = None
 
         return {
             "status": "reloaded",
@@ -2179,16 +2226,14 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
             except Exception as e:
                 logger.debug(f"Embedding similarity lookup failed (using text-based only): {e}")
 
-            # Combined score - use max of different approaches
+            # Combined score - use max of different approaches, then add capped bonus
             # This handles different cases well:
             # - "React" vs "ReactJS": substring_score dominates
-            # - "React Native" vs "React": jaccard + affix
+            # - "React Native" vs "React": jaccard high
             # - Completely different names: embedding_sim dominates
-            similarity = max(
-                substring_score * SUBSTRING_SIMILARITY_WEIGHT + affix_bonus,  # Substring-based
-                jaccard * TOKEN_SIMILARITY_WEIGHT + affix_bonus,  # Token-based
-                embedding_sim * EMBEDDING_SIMILARITY_WEIGHT,  # Semantic-based
-            )
+            # BUG FIX: Previously could exceed 1.0. Now use raw max + capped bonus.
+            base_similarity = max(substring_score, jaccard, embedding_sim)
+            similarity = min(base_similarity + affix_bonus * 0.1, 1.0)
 
             if similarity >= threshold:
                 results.append({

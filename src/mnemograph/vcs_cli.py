@@ -1191,10 +1191,16 @@ def compact(ctx, delete_entity, reason, yes, as_json):
         event.ts = relation.created_at
         new_events.append(event)
 
-    # Write new events (clear and repopulate)
-    engine.event_store.clear()
-    for event in new_events:
-        engine.event_store.append(event)
+    # Write new events (clear and repopulate) - wrapped in transaction for safety
+    conn = engine.event_store.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        engine.event_store.clear(commit=False)
+        engine.event_store.append_batch(new_events, commit=False)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise click.ClickException(f"Compaction failed, rolled back: {e}")
 
     # Reload
     engine.reload()

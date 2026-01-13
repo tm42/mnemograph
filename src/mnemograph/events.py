@@ -35,13 +35,34 @@ class EventStore:
     def _get_conn(self) -> sqlite3.Connection:
         """Get or create database connection."""
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn = sqlite3.connect(str(self.db_path), timeout=30.0)
             self._conn.row_factory = sqlite3.Row
+            # Enable WAL mode for better concurrency
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=30000")
         return self._conn
 
     def _init_db(self):
         """Initialize database schema."""
         conn = self._get_conn()
+
+        # Create schema version table for migration detection
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Check/set schema version
+        version = conn.execute("SELECT version FROM schema_version").fetchone()
+        if version is None:
+            conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+        elif version[0] < 1:
+            # Future: Add migration logic here
+            logger.warning(f"Schema version {version[0]} detected, may need migration")
+
+        # Create events table
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS events (
                 id TEXT PRIMARY KEY,
@@ -87,8 +108,16 @@ class EventStore:
             conn.commit()
         return event
 
-    def append_batch(self, events: list[MemoryEvent]) -> list[MemoryEvent]:
-        """Append multiple events with single commit at end."""
+    def append_batch(
+        self, events: list[MemoryEvent], commit: bool = True
+    ) -> list[MemoryEvent]:
+        """Append multiple events with single commit at end.
+
+        Args:
+            events: Events to append
+            commit: If True, commit immediately. Set False when called within
+                   an external transaction (e.g., compaction).
+        """
         if not events:
             return events
 
@@ -108,7 +137,8 @@ class EventStore:
                     json.dumps(event.data),
                 ),
             )
-        conn.commit()
+        if commit:
+            conn.commit()
         return events
 
     def read_all(self, tolerant: bool = True) -> list[MemoryEvent]:
@@ -232,8 +262,14 @@ class EventStore:
         return cursor.fetchone()[0]
 
     def close(self):
-        """Close database connection."""
+        """Close database connection.
+
+        Forces a WAL checkpoint before closing to ensure all changes
+        are written to the main database file.
+        """
         if self._conn is not None:
+            # Force checkpoint to merge WAL into main db
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._conn.close()
             self._conn = None
 
@@ -241,11 +277,16 @@ class EventStore:
         """Get the database connection for sharing with other components."""
         return self._get_conn()
 
-    def clear(self) -> None:
+    def clear(self, commit: bool = True) -> None:
         """Clear all events from the store.
+
+        Args:
+            commit: If True, commit immediately. Set False when called within
+                   an external transaction (e.g., compaction).
 
         Used for compaction and testing.
         """
         conn = self._get_conn()
         conn.execute("DELETE FROM events")
-        conn.commit()
+        if commit:
+            conn.commit()

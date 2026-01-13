@@ -59,6 +59,7 @@ def test_status_with_uncommitted(initialized_vcs, temp_memory_dir):
         source="cc",
         data={"id": "e1", "name": "test", "type": "concept"},
     ))
+    event_store.close()  # Force WAL checkpoint so git sees changes
 
     status = initialized_vcs.status()
     assert status["is_dirty"] is True
@@ -75,6 +76,7 @@ def test_commit(initialized_vcs, temp_memory_dir):
         source="cc",
         data={"id": "e1", "name": "test", "type": "concept"},
     ))
+    event_store.close()  # Force WAL checkpoint so git sees changes
 
     commit_hash = initialized_vcs.commit("Test commit")
     assert len(commit_hash) == 7
@@ -99,6 +101,7 @@ def test_log(initialized_vcs, temp_memory_dir):
         source="cc",
         data={"id": "e1", "name": "test", "type": "concept"},
     ))
+    event_store.close()  # Force WAL checkpoint
     initialized_vcs.commit("Added test entity")
 
     commits = initialized_vcs.log(n=5)
@@ -162,6 +165,7 @@ def test_commit_auto_summary(initialized_vcs, temp_memory_dir):
         source="cc",
         data={"id": "e1", "name": "My Feature", "type": "concept"},
     ))
+    event_store.close()  # Force WAL checkpoint
 
     initialized_vcs.commit("Added feature", auto_summary=True)
 
