@@ -14,7 +14,6 @@ from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from .events import EventStore
-from .models import MemoryEvent
 from .state import materialize
 
 
@@ -145,24 +144,9 @@ __pycache__/
     def diff(self, ref_a: str = "HEAD", ref_b: Optional[str] = None) -> dict:
         """Compute semantic diff.
 
-        NOTE: With SQLite, only working directory state is available.
-        Both refs are treated as current state.
+        NOTE: With SQLite storage, historical diff via git refs is not meaningful.
+        Use time-travel tools (get_state_at, diff_timerange) instead.
         """
-        # Load current state
-        event_store = EventStore(self.db_file)
-        events = event_store.read_all()
-        event_store.close()
-
-        state = materialize(events)
-
-        current_state = {
-            "ref": "working",
-            "entities": {eid: e.model_dump(mode="json") for eid, e in state.entities.items()},
-            "relations": [r.model_dump(mode="json") for r in state.relations],
-        }
-
-        # With SQLite, we can't reconstruct historical state from git
-        # Return empty diff indicating no changes detectable
         return {
             "from": ref_a,
             "to": ref_b or "working",

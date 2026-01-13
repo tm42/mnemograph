@@ -10,7 +10,7 @@ Uses edge weights to prioritize stronger connections during traversal.
 
 from dataclasses import dataclass
 
-from .models import Entity, Relation
+from .models import Entity
 from .state import GraphState
 from .weights import weighted_bfs, update_co_access_scores
 

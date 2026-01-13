@@ -87,7 +87,6 @@ class EventStore:
             event: Event to append
             durable: If True, commit immediately. Set False for batch operations.
         """
-        from .models import MemoryEvent as ME  # Avoid circular import
 
         conn = self._get_conn()
         conn.execute(

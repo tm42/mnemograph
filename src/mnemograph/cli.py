@@ -2048,7 +2048,6 @@ def graph(ctx, export_path, with_context, open_only, watch):
 
 def main():
     """Legacy argparse entry point - redirects to Click CLI."""
-    import sys
     console.print("[yellow]Note:[/yellow] 'mnemograph-cli' is deprecated. Use 'mg' instead.")
     cli()
 

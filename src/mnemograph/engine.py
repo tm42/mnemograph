@@ -11,8 +11,7 @@ logger = logging.getLogger(__name__)
 
 from .events import EventStore
 from .models import Entity, MemoryEvent, Observation, Relation
-from .state import GraphState, materialize, materialize_at, apply_event
-from .timeutil import parse_time_reference
+from .state import GraphState, materialize, apply_event
 from .branches import BranchManager
 from .similarity import SimilarityChecker
 from .time_travel import TimeTraveler
