@@ -1,13 +1,24 @@
 {
   "name": "mnemograph-local",
-  "description": "Local marketplace for mnemograph plugin development",
+  "owner": {
+    "name": "tm42",
+    "email": "tm42@users.noreply.github.com"
+  },
+  "metadata": {
+    "description": "Mnemograph Claude Code plugin with memory subagents and hooks",
+    "version": "0.4.0"
+  },
   "plugins": [
     {
-      "id": "mnemograph",
-      "source": {
-        "source": "directory",
-        "path": "/Users/tm42/_mnemograph/mnemograph-claude-code"
-      }
+      "name": "mnemograph",
+      "description": "Persistent memory for Claude Code sessions via mnemograph knowledge graph",
+      "version": "0.4.0",
+      "author": {
+        "name": "tm42"
+      },
+      "source": "./",
+      "category": "memory",
+      "tags": ["memory", "knowledge-graph", "persistence"]
     }
   ]
 }
