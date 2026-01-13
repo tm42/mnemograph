@@ -260,13 +260,12 @@ uvx --from mnemograph mg status
 
 ```
 ~/.mnemograph/memory/    # or ~/.claude/memory, ~/.opencode/memory, etc.
-├── events.jsonl         # Append-only event log (source of truth)
+├── mnemograph.db        # SQLite database (events + vectors)
 ├── state.json           # Cached materialized state (derived)
-├── vectors.db           # Semantic search index (derived)
 └── .git/                # Version history
 ```
 
-**Event sourcing** means all changes are recorded as immutable events. The current state is computed by replaying events. This enables:
+**Event sourcing** means all changes are recorded as immutable events in SQLite. The current state is computed by replaying events. This enables:
 
 - Full history of all changes
 - Revert any operation
@@ -365,7 +364,7 @@ This makes it easy to query "what decisions have we made?" by exploring `topic/d
 git clone https://github.com/tm42/mnemograph.git
 cd mnemograph
 uv sync                    # Install dependencies
-uv run pytest              # Run tests
+uv run pytest --cov        # Run tests with coverage (enforces 75% minimum)
 uv run ruff check .        # Lint
 uv run mnemograph          # Run MCP server directly
 ```

@@ -25,15 +25,17 @@ This is NOT another "remember user likes dark mode" system. This is a **shared k
 **Layers**:
 - **MCP Server** (`server.py`): Handles stdio transport, defines tool schemas
 - **Memory Engine** (`engine.py`): Orchestrates all modules
-- **Event Store** (`events.py`): Append-only JSONL log (source of truth)
+- **Event Store** (`events.py`): SQLite-backed append-only event log (source of truth)
 - **State** (`state.py`): Materialized graph computed from events
-- **Vectors** (`vectors.py`): sqlite-vec embeddings with sentence-transformers
+- **Vectors** (`vectors.py`): sqlite-vec embeddings in same database
 - **Retrieval** (`retrieval.py`): Tiered context (shallow/medium/deep)
+- **Time Travel** (`time_travel.py`): Event rewind and state restoration
+- **Similarity** (`similarity.py`): Duplicate detection and entity matching
+- **Branches** (`branches.py`): Filtered views of the knowledge graph
 
 **Storage** (`<project>/.claude/memory/`):
-- `events.jsonl` — Append-only event log (source of truth)
+- `mnemograph.db` — SQLite database (events + vectors in one file)
 - `state.json` — Cached materialized state
-- `vectors.db` — sqlite-vec embeddings index
 
 ---
 
@@ -141,13 +143,18 @@ interface MemoryEvent {
 
 ---
 
-## Implementation Status (v0.3.0)
+## Implementation Status (v0.4.0)
 
 **Completed**: Event sourcing, entity types, vector index, tiered retrieval, unified CLI (`mg`), time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
 
-**Recent**: CLI consolidation — merged `cli.py` (argparse) + `vcs_cli.py` (Click) into unified Click CLI. All commands via `mg`, VCS under `mg vcs` subgroup.
+**v0.4.0 Changes**:
+- SQLite migration — events and vectors now in single `mnemograph.db` file (was JSONL + separate vectors.db)
+- Engine decomposition — extracted `time_travel.py`, `similarity.py` from engine.py
+- Viz extraction — `viz/` package with separate HTML template
+- Test coverage — 84% core library coverage, enforced via `--cov-fail-under=75`
+- CLI consolidation — unified Click CLI (all commands via `mg`)
 
-**Deferred**: Sub-agent synthesis, engine decomposition (Phase 2 of cleanup spec)
+**Deferred**: Sub-agent synthesis
 
 ---
 
@@ -155,7 +162,9 @@ interface MemoryEvent {
 
 ### Running Tests
 ```bash
-/Users/tm42/.local/bin/uv run python -m pytest -x -q
+uv run python -m pytest -x -q           # Quick test run
+uv run python -m pytest --cov           # With coverage (enforces 75% min)
+uv run python -m pytest --cov --cov-report=html  # HTML coverage report
 ```
 
 ### Release Workflow
