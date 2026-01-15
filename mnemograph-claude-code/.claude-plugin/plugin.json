@@ -6,5 +6,33 @@
     "name": "tm42",
     "email": "tm42@users.noreply.github.com"
   },
-  "homepage": "https://github.com/tm42/mnemograph"
+  "homepage": "https://github.com/tm42/mnemograph",
+  "settings": {
+    "auto_context_on_start": {
+      "type": "boolean",
+      "default": true,
+      "description": "Load memory context automatically at session start"
+    },
+    "detect_recall_patterns": {
+      "type": "boolean",
+      "default": true,
+      "description": "Detect recall patterns in prompts and inject memory automatically"
+    },
+    "prompt_to_save": {
+      "type": "boolean",
+      "default": true,
+      "description": "Show reminder to save learnings when session ends"
+    },
+    "context_depth": {
+      "type": "string",
+      "enum": ["shallow", "medium"],
+      "default": "shallow",
+      "description": "How much context to load at session start"
+    },
+    "auto_commit": {
+      "type": "boolean",
+      "default": false,
+      "description": "Auto-commit memory changes when session ends"
+    }
+  }
 }

@@ -1,5 +1,5 @@
 {
-  "description": "Memory hooks for session lifecycle",
+  "description": "Memory hooks for session lifecycle and automatic recall",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,17 @@
           {
             "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/user_prompt.py",
+            "timeout": 5000
           }
         ]
       }

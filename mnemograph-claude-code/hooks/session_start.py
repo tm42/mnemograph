@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
 from mnemograph_client import MnemographClient, detect_project_name
+from settings import load_settings
 
 
 def main():
@@ -28,6 +29,15 @@ def main():
 
     # Get working directory from hook context
     cwd = hook_input.get("cwd", str(Path.cwd()))
+
+    # Load settings
+    settings = load_settings(cwd)
+
+    # Check if auto context is enabled
+    if not settings.get("auto_context_on_start", True):
+        output_result(None)
+        return
+
     project_name = detect_project_name(cwd)
 
     # Initialize client with cwd for proper memory detection
@@ -38,9 +48,10 @@ def main():
         output_result(None)
         return
 
-    # Get memory context (shallow for session start)
+    # Get memory context at configured depth
+    depth = settings.get("context_depth", "shallow")
     result = client.recall(
-        depth="shallow",
+        depth=depth,
         query=project_name,
         format="prose",
         timeout_seconds=10,

@@ -15,24 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
 from mnemograph_client import MnemographClient, detect_project_name
-
-
-# Configuration file path (per-project)
-CONFIG_FILE = ".claude/mnemograph-hook.yaml"
-
-
-def load_config(cwd: str) -> dict:
-    """Load hook configuration from project."""
-    config_path = Path(cwd) / CONFIG_FILE
-    if not config_path.exists():
-        return {}
-
-    try:
-        import yaml
-        with open(config_path) as f:
-            return yaml.safe_load(f) or {}
-    except Exception:
-        return {}
+from settings import load_settings
 
 
 def main():
@@ -48,9 +31,8 @@ def main():
     project_name = detect_project_name(cwd)
     stop_reason = hook_input.get("stopReason", "unknown")
 
-    # Load configuration
-    config = load_config(cwd)
-    auto_commit = config.get("auto_commit", False)
+    # Load settings
+    settings = load_settings(cwd)
 
     # Initialize client with cwd for proper memory detection
     client = MnemographClient(session_id=f"session-{project_name}", cwd=cwd)
@@ -58,11 +40,14 @@ def main():
     output_parts = []
 
     # Only show reminder for normal session ends (not errors/interrupts)
-    if stop_reason in ("end_turn", "stop_sequence", "unknown") and client.available:
+    # and if prompt_to_save is enabled
+    if (stop_reason in ("end_turn", "stop_sequence", "unknown")
+            and client.available
+            and settings.get("prompt_to_save", True)):
         output_parts.append(format_learning_reminder(project_name))
 
     # Auto-commit if enabled
-    if auto_commit and client.available:
+    if settings.get("auto_commit", False) and client.available:
         committed = client.commit(
             message=f"Auto-commit: session end ({project_name})",
             timeout_seconds=5,
