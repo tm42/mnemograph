@@ -10,7 +10,6 @@
   "repository": "https://github.com/tm42/mnemograph",
   "license": "MIT",
   "keywords": ["memory", "knowledge-graph", "persistent-context", "mcp"],
-  "hooks": "./hooks/hooks.json",
   "commands": "./commands/",
-  "agents": ["./agents/memory-init.md"]
+  "agents": ["./agents/memory-init.md", "./agents/memory-store.md"]
 }

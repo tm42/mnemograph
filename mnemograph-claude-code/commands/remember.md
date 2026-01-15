@@ -5,45 +5,66 @@ argument-hint: [what to remember]
 
 # Remember to Knowledge Graph
 
-Use the mnemograph MCP server to store new knowledge in the knowledge graph.
+Store knowledge using the memory-store agent, which handles deduplication, canonical naming, and automatic relation creation.
 
 ## Your Task
 
-The user wants to remember something. Their input: **$ARGUMENTS**
+The user wants to remember: **$ARGUMENTS**
 
 ## Instructions
 
-1. **Parse the input** to identify:
-   - **What** is being remembered (the entity/concept)
-   - **Type** of knowledge (decision, pattern, learning, concept, question, project)
-   - **Key facts** (observations to store)
-   - **Connections** (relations to existing entities)
+1. **Parse the user's input** to identify:
+   - What they want to remember (the content)
+   - Any type hints (decision, pattern, learning, gotcha, question)
+   - Any mentioned relations to existing concepts
 
-2. **Check for duplicates first**:
-   - Use `find_similar` with the entity name
-   - If a similar entity exists (>80% match), use `add_observations` instead of creating new
+2. **Spawn the memory-store agent** with a structured request:
 
-3. **Store using the `remember` tool** with:
-   - `name`: Clear, canonical name (e.g., "Decision: Use SQLite", "Pattern: Repository")
-   - `entity_type`: One of: concept, decision, project, pattern, question, learning
-   - `observations`: Array of atomic facts (one idea per observation)
-   - `relations`: Connections to existing entities (use: implements, uses, part_of, decided_for, etc.)
+```xml
+<store-request>
+  <item content="..." type_hint="..." related_to="..."/>
+</store-request>
+```
 
-4. **Confirm what was stored** and suggest related entities to connect.
+3. **Report the result** to the user:
+   - What was stored (entity names, types)
+   - Any duplicates that were merged
+   - Any ambiguous matches the agent flagged
 
-## Entity Type Guidelines
+## Type Detection Hints
 
-| Type | Use For | Example |
-|------|---------|---------|
-| decision | Choices WITH rationale | "Decision: Use JWT for auth because stateless" |
-| pattern | Recurring solutions | "Pattern: Error boundary in React components" |
-| learning | Discoveries, gotchas | "Learning: SQLite WAL mode needs shared memory" |
-| concept | Ideas, approaches | "Event sourcing", "CQRS" |
-| question | Open unknowns | "Question: Should we add real-time sync?" |
-| project | Codebases, systems | "mnemograph", "auth-service" |
+| User says... | type_hint |
+|--------------|-----------|
+| "we decided", "chose", "decision" | decision |
+| "pattern", "approach", "we use" | pattern |
+| "gotcha", "learned", "turns out", "TIL" | learning |
+| "question", "should we", "wondering" | question |
+| "project", "codebase", "repo" | project |
+| Generic fact | concept |
 
-## Example Usage
+## Examples
 
-- `/remember we decided to use SQLite for simplicity` → creates decision entity
-- `/remember gotcha: pytest must be run with python -m` → creates learning entity
-- `/remember the API uses rate limiting pattern` → creates pattern, links to API
+**User:** `/remember we decided to use JWT for auth`
+**Action:** Spawn memory-store with:
+```xml
+<store-request>
+  <item content="we decided to use JWT for auth" type_hint="decision"/>
+</store-request>
+```
+
+**User:** `/remember gotcha: pytest needs python -m prefix`
+**Action:** Spawn memory-store with:
+```xml
+<store-request>
+  <item content="pytest needs python -m prefix" type_hint="learning"/>
+</store-request>
+```
+
+**User:** `/remember the API uses rate limiting, and we chose Redis for the cache`
+**Action:** Spawn memory-store with multiple items:
+```xml
+<store-request>
+  <item content="API uses rate limiting" type_hint="pattern"/>
+  <item content="chose Redis for cache" type_hint="decision" related_to="API"/>
+</store-request>
+```

@@ -63,14 +63,15 @@ def format_learning_reminder(project_name: str) -> str:
     return f"""---
 **Session ending** - Any learnings worth remembering for {project_name}?
 
-If you discovered patterns, made decisions, or hit gotchas, consider:
+If you discovered patterns, made decisions, or hit gotchas, use the memory-store agent:
+
+```xml
+<store-request>
+  <item content="what you learned" type_hint="learning|decision|pattern"/>
+</store-request>
 ```
-remember(
-    name="<what you learned>",
-    entity_type="learning",  # or: decision, pattern, gotcha
-    observations=["<details>"]
-)
-```
+
+Or simply: `/remember <what you learned>`
 ---"""
 
 

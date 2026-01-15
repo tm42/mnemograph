@@ -395,6 +395,42 @@ class VectorIndex:
         # Convert distance to similarity (1 / (1 + distance))
         return [(r[0], 1.0 / (1.0 + r[1])) for r in results]
 
+    def text_similarity(self, text1: str, text2: str) -> float:
+        """Compute cosine similarity between two text strings.
+
+        Returns 0.0 if embeddings unavailable.
+
+        Args:
+            text1: First text to compare
+            text2: Second text to compare
+
+        Returns:
+            Cosine similarity score 0.0-1.0
+        """
+        model = self.model
+        if model is None:
+            return 0.0
+
+        try:
+            import numpy as np
+
+            # Encode both texts
+            emb1 = model.encode(text1)
+            emb2 = model.encode(text2)
+
+            # Cosine similarity
+            dot = np.dot(emb1, emb2)
+            norm1 = np.linalg.norm(emb1)
+            norm2 = np.linalg.norm(emb2)
+
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+
+            return float(dot / (norm1 * norm2))
+        except Exception as e:
+            logger.debug(f"Text similarity computation failed: {e}")
+            return 0.0
+
     def close(self) -> None:
         """Close database connection (only if we own it)."""
         if self._conn and self._owns_connection:

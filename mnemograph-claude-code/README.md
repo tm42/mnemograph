@@ -7,6 +7,8 @@ A Claude Code hook plugin that provides persistent memory across sessions using 
 - **SessionStart hook**: Automatically injects relevant memory context at the start of each session
 - **Stop hook**: Reminds you to save learnings at session end
 - **Auto-commit** (optional): Automatically commits memory changes when session ends
+- **memory-store agent**: Quality-enforced knowledge storage with deduplication
+- **memory-init agent**: Fast session briefings using Haiku
 
 ## Installation
 
@@ -66,6 +68,43 @@ When a session ends normally, this hook:
 
 1. Outputs a reminder to save any learnings
 2. Optionally auto-commits memory changes (if configured)
+
+## Agents
+
+### memory-store
+
+A dedicated subagent (Haiku) that handles all knowledge storage with quality enforcement:
+
+- **Deduplication**: Checks `find_similar()` before every create
+- **Canonical naming**: Enforces "Decision: X", proper casing, no articles
+- **Auto-relations**: Calls `suggest_relations()` and creates obvious connections
+- **Importance levels**: Supports `low|normal|high` for relation weighting
+
+**Usage via command:**
+```
+/remember we decided to use JWT for auth
+```
+
+**Direct invocation for batch stores:**
+```xml
+<store-request>
+  <item content="chose SQLite for simplicity" type_hint="decision"/>
+  <item content="gotcha: WAL doesn't work on network drives" type_hint="learning" related_to="Decision: Use SQLite"/>
+</store-request>
+```
+
+**Background storage (non-blocking):**
+```python
+Task(
+  subagent_type="memory-store",
+  run_in_background=True,
+  prompt="<store-request><item content=\"...\"/></store-request>"
+)
+```
+
+### memory-init
+
+Fast session briefing agent that summarizes the knowledge graph at session start. Outputs a compact XML briefing with entity counts and key highlights.
 
 ## Memory Detection
 

@@ -50,8 +50,8 @@ def test_status_with_data():
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
         engine.create_entities([
-            {"name": "Entity A", "entityType": "concept", "observations": ["Obs 1"]},
-            {"name": "Entity B", "entityType": "decision", "observations": ["Obs 2"]},
+            {"name": "PostgreSQL Database", "entityType": "concept", "observations": ["Obs 1"]},
+            {"name": "Redis Cache System", "entityType": "decision", "observations": ["Obs 2"]},
         ])
         engine.event_store.close()
 
@@ -73,24 +73,24 @@ def test_log_with_data():
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
         engine.create_entities([
-            {"name": "Entity A", "entityType": "concept", "observations": ["Obs 1"]},
+            {"name": "PostgreSQL Database", "entityType": "concept", "observations": ["Obs 1"]},
         ])
         engine.event_store.close()
 
         result = runner.invoke(cli, ["--memory-path", tmpdir, "log"])
         assert result.exit_code == 0
-        assert "create_entity" in result.output or "Entity A" in result.output
+        assert "create_entity" in result.output or "PostgreSQL Database" in result.output
 
 
 def test_log_filter_session():
     """Test log command filtering by session."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine1 = MemoryEngine(Path(tmpdir), "session-1")
-        engine1.create_entities([{"name": "Entity A", "entityType": "concept"}])
+        engine1.create_entities([{"name": "PostgreSQL Database", "entityType": "concept"}])
         engine1.event_store.close()
 
         engine2 = MemoryEngine(Path(tmpdir), "session-2")
-        engine2.create_entities([{"name": "Entity B", "entityType": "concept"}])
+        engine2.create_entities([{"name": "Redis Cache System", "entityType": "concept"}])
         engine2.event_store.close()
 
         result = runner.invoke(cli, ["--memory-path", tmpdir, "log", "--session", "session-1"])
@@ -101,8 +101,8 @@ def test_log_filter_op():
     """Test log command filtering by operation."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
-        engine.create_entities([{"name": "Entity A", "entityType": "concept"}])
-        engine.create_relations([{"from": "Entity A", "to": "Entity A", "relationType": "self"}])
+        engine.create_entities([{"name": "PostgreSQL Database", "entityType": "concept"}])
+        engine.create_relations([{"from": "PostgreSQL Database", "to": "PostgreSQL Database", "relationType": "self"}])
         engine.event_store.close()
 
         result = runner.invoke(cli, ["--memory-path", tmpdir, "log", "--op", "create_entity"])
@@ -113,11 +113,11 @@ def test_sessions():
     """Test sessions command."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine1 = MemoryEngine(Path(tmpdir), "session-1")
-        engine1.create_entities([{"name": "Entity A", "entityType": "concept"}])
+        engine1.create_entities([{"name": "PostgreSQL Database", "entityType": "concept"}])
         engine1.event_store.close()
 
         engine2 = MemoryEngine(Path(tmpdir), "session-2")
-        engine2.create_entities([{"name": "Entity B", "entityType": "concept"}])
+        engine2.create_entities([{"name": "Redis Cache System", "entityType": "concept"}])
         engine2.event_store.close()
 
         result = runner.invoke(cli, ["--memory-path", tmpdir, "sessions"])
@@ -129,7 +129,7 @@ def test_revert_session():
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
         engine.create_entities([
-            {"name": "Entity A", "entityType": "concept", "observations": ["Obs 1"]},
+            {"name": "PostgreSQL Database", "entityType": "concept", "observations": ["Obs 1"]},
         ])
         engine.event_store.close()
 
@@ -161,9 +161,10 @@ def test_revert_specific_event():
     """Test reverting a specific event by ID."""
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
+        # Use distinct names to avoid semantic similarity blocking
         engine.create_entities([
-            {"name": "Entity A", "entityType": "concept"},
-            {"name": "Entity B", "entityType": "concept"},
+            {"name": "PostgreSQL Database", "entityType": "concept"},
+            {"name": "Redis Cache System", "entityType": "concept"},
         ])
         engine.event_store.close()
 
@@ -187,7 +188,7 @@ def test_revert_specific_event():
         events_after = event_store2.read_all()
         state_after = materialize(events_after)
         assert len(state_after.entities) == 1
-        assert "Entity B" in [e.name for e in state_after.entities.values()]
+        assert "Redis Cache System" in [e.name for e in state_after.entities.values()]
         event_store2.close()
 
 

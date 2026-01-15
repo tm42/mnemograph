@@ -24,9 +24,9 @@ def test_shallow_context_with_entities():
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
         engine.create_entities([
-            {"name": "Entity A", "entityType": "concept", "observations": ["Obs A"]},
-            {"name": "Entity B", "entityType": "decision", "observations": ["Obs B"]},
-            {"name": "Entity C", "entityType": "concept", "observations": ["Obs C"]},
+            {"name": "PostgreSQL Database", "entityType": "concept", "observations": ["Obs A"]},
+            {"name": "Redis Cache System", "entityType": "decision", "observations": ["Obs B"]},
+            {"name": "MongoDB Storage", "entityType": "concept", "observations": ["Obs C"]},
         ])
 
         result = engine.recall(depth="shallow", format="graph")

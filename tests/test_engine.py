@@ -89,10 +89,11 @@ def test_get_entities_by_type():
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
+        # Use distinct names to avoid semantic similarity blocking
         engine.create_entities([
-            {"name": "Decision A", "entityType": "decision"},
-            {"name": "Concept A", "entityType": "concept"},
-            {"name": "Decision B", "entityType": "decision"},
+            {"name": "Decision: Use PostgreSQL", "entityType": "decision"},
+            {"name": "Concept: Event Sourcing", "entityType": "concept"},
+            {"name": "Decision: Use Redis Cache", "entityType": "decision"},
         ])
 
         decisions = engine.get_entities_by_type("decision")
@@ -309,20 +310,21 @@ def test_find_orphans_detects_unconnected():
     with tempfile.TemporaryDirectory() as tmpdir:
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
+        # Use distinct names to avoid semantic similarity blocking
         engine.create_entities([
-            {"name": "Connected A", "entityType": "concept"},
-            {"name": "Connected B", "entityType": "concept"},
-            {"name": "Orphan C", "entityType": "concept"},
+            {"name": "PostgreSQL Database", "entityType": "concept"},
+            {"name": "Redis Cache System", "entityType": "concept"},
+            {"name": "Orphan Concept", "entityType": "concept"},
         ])
 
         engine.create_relations([
-            {"from": "Connected A", "to": "Connected B", "relationType": "uses"},
+            {"from": "PostgreSQL Database", "to": "Redis Cache System", "relationType": "uses"},
         ])
 
         orphans = engine.find_orphans()
 
         assert len(orphans) == 1
-        assert orphans[0]["name"] == "Orphan C"
+        assert orphans[0]["name"] == "Orphan Concept"
 
 
 def test_find_orphans_empty_graph():
@@ -494,13 +496,13 @@ def test_clear_graph_basic():
 
         # Create some data
         engine.create_entities([
-            {"name": "Entity A", "entityType": "concept"},
-            {"name": "Entity B", "entityType": "concept"},
-            {"name": "Entity C", "entityType": "project"},
+            {"name": "PostgreSQL Database", "entityType": "concept"},
+            {"name": "Redis Cache System", "entityType": "concept"},
+            {"name": "MongoDB Storage", "entityType": "project"},
         ])
 
         engine.create_relations([
-            {"from": "Entity A", "to": "Entity B", "relationType": "uses"},
+            {"from": "PostgreSQL Database", "to": "Redis Cache System", "relationType": "uses"},
         ])
 
         assert len(engine.state.entities) == 3
@@ -526,7 +528,7 @@ def test_clear_graph_event_sourced():
 
         # Create some data
         engine.create_entities([
-            {"name": "Entity A", "entityType": "concept"},
+            {"name": "PostgreSQL Database", "entityType": "concept"},
         ])
 
         # Get timestamp before clear
@@ -545,7 +547,7 @@ def test_clear_graph_event_sourced():
         state_before = engine.state_at(before_clear)
 
         assert len(state_before.entities) == 1
-        assert any(e.name == "Entity A" for e in state_before.entities.values())
+        assert any(e.name == "PostgreSQL Database" for e in state_before.entities.values())
 
 
 def test_clear_graph_clears_indices():
@@ -554,12 +556,12 @@ def test_clear_graph_clears_indices():
         engine = MemoryEngine(Path(tmpdir), "test-session")
 
         engine.create_entities([
-            {"name": "Connected A", "entityType": "concept"},
-            {"name": "Connected B", "entityType": "concept"},
+            {"name": "Nginx Webserver", "entityType": "concept"},
+            {"name": "Apache Kafka", "entityType": "concept"},
         ])
 
         engine.create_relations([
-            {"from": "Connected A", "to": "Connected B", "relationType": "uses"},
+            {"from": "Nginx Webserver", "to": "Apache Kafka", "relationType": "uses"},
         ])
 
         # Verify indices have data

@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 # Similarity tuning constants
 DEFAULT_SIMILARITY_THRESHOLD = 0.7
 AFFIX_MATCH_BONUS = 0.2  # Applied as bonus * 0.1 = max 0.02 boost
-DEFAULT_VECTOR_SEARCH_LIMIT = 20
 
 
 class SimilarityChecker:
@@ -67,7 +66,7 @@ class SimilarityChecker:
                 continue
 
             similarity = self.combined_similarity(
-                name, entity.name, eid, name_lower, name_tokens
+                name, entity.name, name_lower, name_tokens
             )
 
             if similarity >= threshold:
@@ -85,7 +84,6 @@ class SimilarityChecker:
         self,
         name1: str,
         name2: str,
-        entity_id: str | None = None,
         name1_lower: str | None = None,
         name1_tokens: set[str] | None = None,
     ) -> float:
@@ -100,7 +98,6 @@ class SimilarityChecker:
         Args:
             name1: First name
             name2: Second name to compare
-            entity_id: Optional entity ID for embedding lookup
             name1_lower: Pre-computed lowercase (optimization)
             name1_tokens: Pre-computed tokens (optimization)
 
@@ -127,8 +124,8 @@ class SimilarityChecker:
 
         # 4. Embedding similarity (if available)
         embedding_sim = 0.0
-        if self._get_vector_index is not None and entity_id is not None:
-            embedding_sim = self._embedding_similarity(name1, entity_id)
+        if self._get_vector_index is not None:
+            embedding_sim = self._embedding_similarity(name1, name2)
 
         # Combined score - max of approaches + capped bonus
         base_similarity = max(substring_score, jaccard, embedding_sim)
@@ -160,23 +157,25 @@ class SimilarityChecker:
         suffix_match = s1.endswith(s2) or s2.endswith(s1)
         return AFFIX_MATCH_BONUS if (prefix_match or suffix_match) else 0.0
 
-    def _embedding_similarity(self, query: str, target_id: str) -> float:
-        """Get embedding-based similarity score.
+    def _embedding_similarity(self, name1: str, name2: str) -> float:
+        """Get embedding-based similarity score between two names.
 
-        Uses vector index search to find similarity. Only triggers vector
-        index loading when this method is actually called.
+        Uses vector index to compute cosine similarity between embeddings.
+        Only triggers model loading when this method is actually called.
+
+        Args:
+            name1: First name to compare
+            name2: Second name to compare
+
+        Returns:
+            Cosine similarity score 0.0-1.0
         """
         if self._get_vector_index is None:
             return 0.0
 
         try:
             vector_index = self._get_vector_index()
-            search_results = vector_index.search(
-                query, limit=DEFAULT_VECTOR_SEARCH_LIMIT
-            )
-            for result_id, score in search_results:
-                if result_id == target_id:
-                    return score
+            return vector_index.text_similarity(name1, name2)
         except Exception as e:
             logger.debug(f"Embedding similarity lookup failed: {e}")
 
