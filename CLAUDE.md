@@ -176,4 +176,51 @@ uv run python -m pytest --cov --cov-report=html  # HTML coverage report
 
 ---
 
+## Claude Code Plugin (`mnemograph-claude-code/`)
+
+The plugin provides hooks, commands, and agents for Claude Code integration.
+
+### Plugin Schema Rules (IMPORTANT)
+
+The `.claude-plugin/plugin.json` has strict validation. Use `claude plugin validate <path>` to check.
+
+**Required format:**
+```json
+{
+  "name": "mnemograph",
+  "version": "0.4.0",
+  "description": "...",
+  "author": { "name": "...", "email": "..." },
+  "hooks": "./hooks/hooks.json",
+  "commands": "./commands/",
+  "agents": ["./agents/memory-init.md"]
+}
+```
+
+**Critical rules:**
+1. **Paths must start with `./`** — `"./hooks/hooks.json"` not `"hooks/hooks.json"`
+2. **`agents` must be an array of files** — `["./agents/foo.md"]` not `"./agents/"`
+3. **No `settings` field** — use `.claude/mnemograph.local.md` for per-project config
+4. **Hooks/commands/agents are NOT auto-discovered** — must be declared in plugin.json
+
+### MCP Server Setup
+
+The MCP server entry point is `mnemograph-server` (not `mnemograph` which is CLI).
+
+```bash
+claude mcp add -s user mnemograph -e MEMORY_PATH=/Users/tm42/.claude/memory -- /path/to/uv --directory /path/to/mnemograph run mnemograph-server
+```
+
+### Plugin Testing
+
+```bash
+# Validate plugin manifest
+claude plugin validate /path/to/mnemograph-claude-code
+
+# Load plugin for session
+claude --plugin-dir /path/to/mnemograph-claude-code
+```
+
+---
+
 > See `.specs/IMPLEMENTATION_REFERENCE.md` for historical implementation details and prior art notes.
