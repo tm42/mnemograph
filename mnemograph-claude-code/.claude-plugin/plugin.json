@@ -1,6 +1,6 @@
 {
   "name": "mnemograph",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Persistent memory for Claude Code sessions via mnemograph knowledge graph",
   "author": {
     "name": "tm42",
