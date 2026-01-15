@@ -73,8 +73,9 @@ class VectorIndex:
         self.health = VectorHealth(status=VectorStatus.UNAVAILABLE)
         self._extension_loaded = False
         self._model_loaded = False
+        self._tables_initialized = False
 
-        # If connection provided, try to load extension
+        # If connection provided, try to load extension (but not model)
         if self._conn is not None:
             self._try_load_extension()
 
@@ -86,7 +87,12 @@ class VectorIndex:
         self._try_load_extension()
 
     def _try_load_extension(self) -> bool:
-        """Try to load sqlite-vec extension. Returns True on success."""
+        """Try to load sqlite-vec extension. Returns True on success.
+
+        NOTE: This does NOT load the embedding model or create tables.
+        Those happen lazily on first search/index operation to avoid
+        the 2-3 second cold start delay from sentence-transformers.
+        """
         if self._extension_loaded:
             return True
 
@@ -105,22 +111,14 @@ class VectorIndex:
             self._conn.enable_load_extension(False)
             self._extension_loaded = True
 
-            # Initialize tables (may trigger model loading via self.dims)
-            self._init_tables()
+            # Check if tables already exist (from previous session)
+            self._tables_initialized = self._check_tables_exist()
 
-            # Update health based on model status
-            if self._model_loaded:
-                self.health = VectorHealth(
-                    status=VectorStatus.READY,
-                    embedding_model=self._model_name,
-                    dimension=self._dims,
-                )
-            else:
-                # Extension loaded, but model not yet loaded
-                self.health = VectorHealth(
-                    status=VectorStatus.DEGRADED,
-                    error="Waiting for embedding model",
-                )
+            # Extension loaded, model not yet loaded (lazy)
+            self.health = VectorHealth(
+                status=VectorStatus.DEGRADED,
+                error="Embedding model loads on first search",
+            )
             return True
         except Exception as e:
             self.health = VectorHealth(
@@ -128,6 +126,18 @@ class VectorIndex:
                 error=f"sqlite-vec extension failed: {e}",
             )
             logger.warning(f"Vector search unavailable: {e}")
+            return False
+
+    def _check_tables_exist(self) -> bool:
+        """Check if vector tables already exist in database."""
+        if self._conn is None:
+            return False
+        try:
+            result = self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_meta'"
+            ).fetchone()
+            return result is not None
+        except Exception:
             return False
 
     def _try_load_model(self) -> bool:
@@ -208,6 +218,19 @@ class VectorIndex:
         obs_text = ". ".join(o.text for o in entity.observations)
         return f"{entity.name} ({entity.type}): {obs_text}"
 
+    def _ensure_tables(self) -> bool:
+        """Ensure tables are initialized. Returns True if ready."""
+        if self._tables_initialized:
+            return True
+
+        if self._conn is None:
+            return False
+
+        # Now we need dims, which triggers model loading
+        self._init_tables()
+        self._tables_initialized = True
+        return True
+
     def index_entity(self, entity: Entity) -> bool:
         """Add or update entity in vector index. Returns True if indexed."""
         # Ensure connection is available
@@ -218,6 +241,10 @@ class VectorIndex:
         # Ensure model is loaded (updates health to READY on success)
         model = self.model
         if model is None:
+            return False
+
+        # Ensure tables exist (creates them on first index)
+        if not self._ensure_tables():
             return False
 
         text = self._entity_to_text(entity)
@@ -298,6 +325,8 @@ class VectorIndex:
         """Search for similar entities. Returns (entity_id, similarity_score) tuples.
 
         Returns empty list if vector search is unavailable.
+
+        NOTE: First search triggers model loading (~2-3s cold start).
         """
         # Ensure connection and model are loaded (lazy init)
         conn = self.conn
@@ -309,6 +338,11 @@ class VectorIndex:
         model = self.model
         if model is None:
             logger.debug("Vector search unavailable: no embedding model")
+            return []
+
+        # Ensure tables exist
+        if not self._ensure_tables():
+            logger.debug("Vector search unavailable: tables not initialized")
             return []
 
         # Now check health after lazy loading
