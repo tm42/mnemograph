@@ -9,7 +9,7 @@ Make mnemograph useful for any MCP-compatible agent, not just Claude Code.
 ## Design Principles
 
 1. **MCP server is agent-agnostic** — works with any MCP client
-2. **CLI naming is universal** — `mnemograph` / `mg` primary, `claude-mem` as alias
+2. **CLI naming is universal** — `mnemograph` primary command
 3. **Agent-specific integrations are separate packages** — e.g., `mnemograph-claude-code` plugin
 4. **No dumbed-down exports** — graph structure is the value, don't flatten it
 
@@ -155,27 +155,14 @@ uv run --directory /path/to/mnemograph mnemograph
 ### Primary Commands
 
 ```bash
-# Full name
+# Full name (primary)
 mnemograph status
-mnemograph context "auth"
+mnemograph recall "auth"
 mnemograph branch create project/api
 
-# Short alias
-mg status
-mg context "auth"
-mg branch create project/api
-
 # Custom memory location (global options before subcommand)
-mg --memory-path ~/.opencode/memory status
-mg --memory-path ~/.opencode/memory graph
-```
-
-### Claude Code Alias (Backward Compat)
-
-```bash
-# Still works, same commands
-claude-mem status
-claude-mem context "auth"
+mnemograph --memory-path ~/.opencode/memory status
+mnemograph --memory-path ~/.opencode/memory graph
 ```
 
 ### Implementation
@@ -184,10 +171,8 @@ claude-mem context "auth"
 # pyproject.toml
 
 [project.scripts]
-mnemograph = "mnemograph.server:main"       # MCP server
-mnemograph-cli = "mnemograph.cli:main"      # Legacy entry point
-mg = "mnemograph.cli:cli"                   # Unified CLI (recommended)
-claude-mem = "mnemograph.cli:cli"           # Alias for CC users
+mnemograph-server = "mnemograph.server:main"  # MCP server entry point
+mnemograph = "mnemograph.cli:cli"             # Primary CLI
 ```
 
 ---
@@ -441,13 +426,13 @@ uvx mnemograph --help
 ## Implementation Checklist
 
 ### Core (in mnemograph package)
-- [x] CLI entry points (`mnemograph`, `mg`, `claude-mem` alias) — Done in v0.1.4
+- [x] CLI entry points (`mnemograph`) — Done
 - [x] MCP client configurations documented — Done
 - [x] Universal project descriptions — Done
 - [x] Add `get_primer` MCP tool — Done
 - [x] Add `session_start` / `session_end` MCP tools — Done
-- [x] Add `mg session-start/session-end/primer` CLI commands — Done
-- [x] CLI consolidation — merged into unified `mg` CLI with `vcs` subgroup
+- [x] Add `mnemograph session-start/session-end/primer` CLI commands — Done
+- [x] CLI consolidation — merged into unified `mnemograph` CLI with `vcs` subgroup
 
 ### Claude Code Plugin (separate package: mnemograph-claude-code)
 - [ ] SessionStart hook
@@ -468,7 +453,7 @@ uvx mnemograph --help
 │                     mnemograph (core)                   │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐ │
 │  │ MCP Server  │  │    CLI      │  │   Git VCS       │ │
-│  │ (universal) │  │ mg/mnemograph│ │   Integration   │ │
+│  │ (universal) │  │  mnemograph  │ │   Integration   │ │
 │  └─────────────┘  └─────────────┘  └─────────────────┘ │
 │                         │                               │
 │         get_primer, session_start/end                   │

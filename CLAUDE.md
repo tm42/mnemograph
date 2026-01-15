@@ -145,14 +145,14 @@ interface MemoryEvent {
 
 ## Implementation Status (v0.4.0)
 
-**Completed**: Event sourcing, entity types, vector index, tiered retrieval, unified CLI (`mg`), time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
+**Completed**: Event sourcing, entity types, vector index, tiered retrieval, unified CLI (`mnemograph`), time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
 
 **v0.4.0 Changes**:
 - SQLite migration — events and vectors now in single `mnemograph.db` file (was JSONL + separate vectors.db)
 - Engine decomposition — extracted `time_travel.py`, `similarity.py` from engine.py
 - Viz extraction — `viz/` package with separate HTML template
 - Test coverage — 84% core library coverage, enforced via `--cov-fail-under=75`
-- CLI consolidation — unified Click CLI (all commands via `mg`)
+- CLI consolidation — unified Click CLI (all commands via `mnemograph`)
 
 **Deferred**: Sub-agent synthesis
 

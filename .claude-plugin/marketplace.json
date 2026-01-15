@@ -11,7 +11,7 @@
   },
   "plugins": [
     {
-      "name": "memory-agents",
+      "name": "mnemograph",
       "description": "Persistent memory for Claude Code sessions via mnemograph knowledge graph",
       "version": "0.4.0",
       "author": {

@@ -149,15 +149,15 @@ MNEMOGRAPH_GUIDE_SEED = {
                 "Fix orphan entities: connect them, merge them, or delete if irrelevant.",
                 "Merge duplicates promptly — they fragment knowledge and confuse recall.",
                 "Use get_weak_relations() to find pruning candidates (low-weight noise).",
-                "Visualize with 'mg graph' to see structure and spot issues.",
+                "Visualize with 'mnemograph graph' to see structure and spot issues.",
             ],
         },
         {
             "name": "mnemograph/visualization",
             "type": "concept",
             "observations": [
-                "Run 'mg graph' to open interactive D3.js viewer in browser.",
-                "Use 'mg graph --watch' for live refresh mode with Refresh button.",
+                "Run 'mnemograph graph' to open interactive D3.js viewer in browser.",
+                "Use 'mnemograph graph --watch' for live refresh mode with Refresh button.",
                 "Layouts: force-directed (default), radial (hubs at center), clustered (by component).",
                 "Color modes: by entity type, connected component, or degree centrality.",
                 "Edge weight slider filters connections by strength — useful for large graphs.",
@@ -221,10 +221,10 @@ MNEMOGRAPH_GUIDE_SEED = {
             "name": "mnemograph/human-curation",
             "type": "concept",
             "observations": [
-                "Humans can review agent changes: 'mg log --since yesterday'",
-                "Humans can visualize structure: 'mg graph --watch'",
-                "Humans can check health: 'mg health --fix' for interactive cleanup",
-                "Humans can undo mistakes: 'mg rewind' or 'mg restore --to <timestamp>'",
+                "Humans can review agent changes: 'mnemograph log --since yesterday'",
+                "Humans can visualize structure: 'mnemograph graph --watch'",
+                "Humans can check health: 'mnemograph health --fix' for interactive cleanup",
+                "Humans can undo mistakes: 'mnemograph rewind' or 'mnemograph restore --to <timestamp>'",
                 "Memory is a collaboration — agents propose, humans can curate.",
                 "Periodic human review keeps memory focused and accurate.",
             ],
@@ -1764,11 +1764,11 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
                     "Explore it with: recall('mnemograph', depth='medium')"
                 ),
                 "next_steps": [
-                    "Run 'mg graph' in terminal to visualize the knowledge graph",
+                    "Run 'mnemograph graph' in terminal to visualize the knowledge graph",
                     "Ask user: 'Should this project use local or global memory?'",
                     "Start adding project-specific knowledge with remember()",
                 ],
-                "visualization": "mg graph  # Opens interactive D3.js viewer in browser",
+                "visualization": "mnemograph graph  # Opens interactive D3.js viewer in browser",
             }
 
         return result
@@ -1869,7 +1869,7 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
             "status": "cleared",
             **counts,
             "reason": reason if reason else None,
-            "tip": "Use get_state_at(timestamp) to view graph before clear, or check 'mg log' for history",
+            "tip": "Use get_state_at(timestamp) to view graph before clear, or check 'mnemograph log' for history",
             "undo_options": {
                 "quick": "rewind() — uses git, fast, audit trail in git only",
                 "audit": "restore_state_at('5 minutes ago') — preserves full audit trail in events",

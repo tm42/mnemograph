@@ -17,10 +17,8 @@ dependencies = [
 ]
 
 [project.scripts]
-mnemograph = "mnemograph.server:main"
-mnemograph-cli = "mnemograph.cli:main"
-mg = "mnemograph.cli:cli"            # Short universal alias
-claude-mem = "mnemograph.cli:cli"    # Backward compat for CC users
+mnemograph-server = "mnemograph.server:main"  # MCP server entry point
+mnemograph = "mnemograph.cli:cli"             # Primary CLI (avoids conflict with mg editor)
 
 [project.urls]
 Homepage = "https://github.com/tm42/mnemograph"

@@ -747,7 +747,7 @@ def rewind(ctx, steps, to_commit, yes, as_json):
 
     if not engine._in_git_repo:
         console.print("[red]Error:[/red] Not in a git repository. Cannot use git-based rewind.")
-        console.print("[dim]Tip: Use 'mg restore --to <timestamp>' for event-based restore.[/dim]")
+        console.print("[dim]Tip: Use 'mnemograph restore --to <timestamp>' for event-based restore.[/dim]")
         return
 
     if not yes and not as_json:
@@ -797,7 +797,7 @@ def restore(ctx, timestamp, reason, yes, as_json):
 
     if preview_entities == 0:
         console.print(f"[red]Error:[/red] No entities found at {timestamp}")
-        console.print("[dim]Tip: Use 'mg show --at <timestamp>' to explore available states.[/dim]")
+        console.print("[dim]Tip: Use 'mnemograph show --at <timestamp>' to explore available states.[/dim]")
         return
 
     if not yes and not as_json:
@@ -1045,7 +1045,7 @@ def orphans(ctx, as_json):
 
     console.print(table)
     console.print()
-    console.print("[dim]Run 'mg health --fix' for interactive cleanup.[/dim]")
+    console.print("[dim]Run 'mnemograph health --fix' for interactive cleanup.[/dim]")
 
 
 @cli.command()
@@ -1266,7 +1266,7 @@ def clear(ctx, reason, yes, as_json):
 
     if not yes:
         console.print(f"[yellow]⚠  This will clear ALL {entity_count} entities and {relation_count} relations.[/yellow]")
-        console.print("[dim]   (Event is recorded — can rewind with 'mg show --at <timestamp>')[/dim]")
+        console.print("[dim]   (Event is recorded — can rewind with 'mnemograph show --at <timestamp>')[/dim]")
         console.print()
         if not click.confirm("Are you sure you want to clear the graph?", default=False):
             console.print("[dim]Cancelled.[/dim]")
@@ -1280,7 +1280,7 @@ def clear(ctx, reason, yes, as_json):
         console.print(f"[green]✓[/green] Cleared {result['entities_cleared']} entities, {result['relations_cleared']} relations")
         if reason:
             console.print(f"   Reason: {reason}")
-        console.print("[dim]   Tip: Use 'mg show --at <timestamp>' to view graph before clear[/dim]")
+        console.print("[dim]   Tip: Use 'mnemograph show --at <timestamp>' to view graph before clear[/dim]")
 
 
 @cli.command()
@@ -2048,7 +2048,7 @@ def graph(ctx, export_path, with_context, open_only, watch):
 
 def main():
     """Legacy argparse entry point - redirects to Click CLI."""
-    console.print("[yellow]Note:[/yellow] 'mnemograph-cli' is deprecated. Use 'mg' instead.")
+    console.print("[yellow]Note:[/yellow] 'mnemograph-cli' is deprecated. Use 'mnemograph' instead.")
     cli()
 
 

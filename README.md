@@ -36,8 +36,8 @@ MEMORY_PATH=".claude/memory"
 MEMORY_PATH="$HOME/.claude/memory"
 
 # CLI: use --global flag
-mg --global status
-mg --global graph
+mnemograph --global status
+mnemograph --global graph
 ```
 
 ## Quick Start
@@ -198,55 +198,55 @@ recall(depth="medium", query="authentication", format="graph")
 
 ### CLI Tools
 
-**`mg`** (or `claude-mem`) — Unified CLI for all memory operations:
+**`mnemograph`** — Unified CLI for all memory operations:
 
 ```bash
 # Basic operations
-mg status                # Show entity/relation counts, recent events
-mg log                   # View event history
-mg log --session X       # Filter by session
-mg sessions              # List all sessions
-mg export                # Export graph as JSON
+mnemograph status                # Show entity/relation counts, recent events
+mnemograph log                   # View event history
+mnemograph log --session X       # Filter by session
+mnemograph sessions              # List all sessions
+mnemograph export                # Export graph as JSON
 
 # VCS commands (git-based version control)
-mg vcs init              # Initialize memory as git repo
-mg vcs commit -m "msg"   # Commit current state
-mg vcs log               # View commit history
-mg vcs revert --event ID # Undo specific events (compensating events)
-mg vcs revert --session X # Undo entire session
+mnemograph vcs init              # Initialize memory as git repo
+mnemograph vcs commit -m "msg"   # Commit current state
+mnemograph vcs log               # View commit history
+mnemograph vcs revert --event ID # Undo specific events (compensating events)
+mnemograph vcs revert --session X # Undo entire session
 
 # Graph visualization
-mg graph                 # Open interactive graph viewer
-mg graph --watch         # Live reload mode (refresh button)
+mnemograph graph                 # Open interactive graph viewer
+mnemograph graph --watch         # Live reload mode (refresh button)
 
 # Time travel
-mg show --at "2 days ago"  # View state at a point in time
-mg diff "1 week ago"       # Show changes since then
-mg history "EntityName"    # Full changelog for an entity
-mg rewind -n 1             # Git-based rewind by N commits
-mg restore --to "yesterday" # Event-based restore (audit-preserving)
+mnemograph show --at "2 days ago"  # View state at a point in time
+mnemograph diff "1 week ago"       # Show changes since then
+mnemograph history "EntityName"    # Full changelog for an entity
+mnemograph rewind -n 1             # Git-based rewind by N commits
+mnemograph restore --to "yesterday" # Event-based restore (audit-preserving)
 
 # Graph health and maintenance
-mg health                # Show graph health report (orphans, duplicates, etc.)
-mg health --fix          # Interactive cleanup mode
-mg similar "React"       # Find entities similar to "React" (duplicate check)
-mg orphans               # List entities with no relations
-mg suggest "FastAPI"     # Suggest relations for an entity
-mg clear                 # Clear all entities and relations (with confirmation)
+mnemograph health                # Show graph health report (orphans, duplicates, etc.)
+mnemograph health --fix          # Interactive cleanup mode
+mnemograph similar "React"       # Find entities similar to "React" (duplicate check)
+mnemograph orphans               # List entities with no relations
+mnemograph suggest "FastAPI"     # Suggest relations for an entity
+mnemograph clear                 # Clear all entities and relations (with confirmation)
 
 # Global options (come *before* the subcommand)
-mg --global status       # Use global memory (~/.claude/memory)
-mg --memory-path /path graph  # Custom memory location
+mnemograph --global status       # Use global memory (~/.claude/memory)
+mnemograph --memory-path /path graph  # Custom memory location
 ```
 
 **Running from anywhere** (without activating the venv):
 
 ```bash
 # Using uv (recommended)
-uv run --directory /path/to/mnemograph mg graph
+uv run --directory /path/to/mnemograph mnemograph graph
 
 # Using uvx (if installed from PyPI)
-uvx --from mnemograph mg status
+uvx --from mnemograph mnemograph status
 ```
 
 **Graph Visualization** — Interactive D3.js viewer:
@@ -273,8 +273,8 @@ uvx --from mnemograph mg status
 - Audit trail of what Claude learned and when
 
 **Two-layer versioning:**
-- `mg vcs revert` — fine-grained, undo specific events via compensating events
-- `mg rewind` / `mg restore` — coarse-grained, git-level or timestamp-based restore
+- `mnemograph vcs revert` — fine-grained, undo specific events via compensating events
+- `mnemograph rewind` / `mnemograph restore` — coarse-grained, git-level or timestamp-based restore
 
 ## Branching
 

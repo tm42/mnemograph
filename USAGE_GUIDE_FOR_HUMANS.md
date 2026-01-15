@@ -6,91 +6,91 @@ A quick reference for reviewing and curating your AI's memory.
 
 ```bash
 # Check what's in memory
-mg status
+mnemograph status
 
 # See recent changes
-mg log --since "1 hour ago"
-mg log --since yesterday
+mnemograph log --since "1 hour ago"
+mnemograph log --since yesterday
 
 # Visualize the graph
-mg graph              # Quick view (auto-closes)
-mg graph --watch      # Live mode with refresh button
+mnemograph graph              # Quick view (auto-closes)
+mnemograph graph --watch      # Live mode with refresh button
 ```
 
 ## Review What the Agent Learned
 
 ```bash
 # What changed today?
-mg log --since today
+mnemograph log --since today
 
 # What did a specific session add?
-mg log --session <session-id>
+mnemograph log --session <session-id>
 
 # See full history of an entity
-mg show "entity-name" --history
+mnemograph show "entity-name" --history
 
 # Compare states
-mg diff "yesterday"
-mg diff "last week"
+mnemograph diff "yesterday"
+mnemograph diff "last week"
 ```
 
 ## Curate and Clean Up
 
 ```bash
 # Health check — find problems
-mg health
+mnemograph health
 
 # Interactive cleanup mode
-mg health --fix
+mnemograph health --fix
 
 # Find duplicates
-mg similar "entity-name"
+mnemograph similar "entity-name"
 
 # Find orphans (unconnected entities)
-mg orphans
+mnemograph orphans
 
 # Clear everything (with confirmation)
-mg clear
+mnemograph clear
 ```
 
 ## Undo Mistakes
 
 ```bash
 # Quick undo (git-based)
-mg rewind              # Undo last change
-mg rewind --steps 3    # Go back 3 commits
+mnemograph rewind              # Undo last change
+mnemograph rewind --steps 3    # Go back 3 commits
 
 # Restore to a point in time (preserves audit trail)
-mg restore --to "2 hours ago"
-mg restore --to "2025-01-10T14:00"
+mnemograph restore --to "2 hours ago"
+mnemograph restore --to "2025-01-10T14:00"
 
 # Preview before restoring
-mg show --at "yesterday"
+mnemograph show --at "yesterday"
 ```
 
 ## Memory Scope
 
 ```bash
 # Project-local memory (default)
-mg status
+mnemograph status
 
 # Global memory (cross-project)
-mg --global status
-mg --global graph
+mnemograph --global status
+mnemograph --global graph
 
 # Custom location
-mg --memory-path ~/shared-memory status
+mnemograph --memory-path ~/shared-memory status
 ```
 
 ## When to Intervene
 
 | Symptom | Action |
 |---------|--------|
-| Too many similar entities | `mg health --fix` → merge duplicates |
+| Too many similar entities | `mnemograph health --fix` → merge duplicates |
 | Orphan entities piling up | Connect them to topics or delete |
 | Outdated information | Add observations or delete entity |
 | Agent storing noise | Review and provide feedback on what to skip |
-| Graph feels cluttered | Visualize with `mg graph`, prune weak relations |
+| Graph feels cluttered | Visualize with `mnemograph graph`, prune weak relations |
 
 ## Visualization Tips
 
@@ -105,9 +105,9 @@ mg --memory-path ~/shared-memory status
 
 The agent proposes knowledge; you curate it.
 
-- Run `mg log` periodically to see what's being stored
-- Use `mg health` weekly to catch issues early
-- Visualize with `mg graph` to understand structure
+- Run `mnemograph log` periodically to see what's being stored
+- Use `mnemograph health` weekly to catch issues early
+- Visualize with `mnemograph graph` to understand structure
 - Rewind/restore if something goes wrong
 
 Memory is a collaboration. Your oversight keeps it focused and accurate.
