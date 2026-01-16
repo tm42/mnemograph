@@ -1,0 +1,32 @@
+"""Shared constants for mnemograph."""
+
+# Time constants (in seconds)
+SECONDS_PER_MINUTE = 60
+SECONDS_PER_HOUR = 3600
+SECONDS_PER_DAY = 86400
+SECONDS_PER_WEEK = 604800
+SECONDS_PER_MONTH = 2592000  # 30 days
+SECONDS_PER_YEAR = 31536000  # 365 days
+
+# Decay constants
+LN_2 = 0.693147  # ln(2) for half-life calculations
+DEFAULT_HALF_LIFE_DAYS = 30.0
+
+# Embedding constants
+DEFAULT_EMBEDDING_DIMENSION = 384
+
+# Retrieval limits
+DEFAULT_RECENT_LIMIT = 5
+DEFAULT_HOT_LIMIT = 5
+DEFAULT_SHALLOW_ENTITIES = 5
+DEFAULT_MEDIUM_MAX_NODES = 30
+DEFAULT_DEEP_SEEDS = 10
+DEFAULT_GOTCHA_LIMIT = 10
+
+# Type filter multiplier for vector search
+TYPE_FILTER_OVERFETCH_MULTIPLIER = 5
+
+# Weight coefficients
+WEIGHT_RECENCY_COEFF = 0.4
+WEIGHT_CO_ACCESS_COEFF = 0.3
+WEIGHT_EXPLICIT_COEFF = 0.3

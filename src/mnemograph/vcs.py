@@ -6,6 +6,7 @@ depended on JSONL line-by-line analysis are deprecated.
 """
 
 import json
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -118,10 +119,16 @@ __pycache__/
     def show(self, ref: str = "HEAD") -> dict:
         """Get graph state at ref.
 
-        NOTE: With SQLite, we can only show current state.
-        Historical state would require keeping database snapshots.
+        .. deprecated:: 0.4.0
+            Historical state not available with SQLite storage.
+            Use time-travel tools (get_state_at) instead.
         """
         if ref != "HEAD" and ref != "working":
+            warnings.warn(
+                "vcs.show() for non-HEAD refs is deprecated. Use time-travel tools (get_state_at) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             return {
                 "ref": ref,
                 "error": "Historical state not available with SQLite storage. Use time-travel tools instead.",
@@ -145,9 +152,15 @@ __pycache__/
     def diff(self, ref_a: str = "HEAD", ref_b: Optional[str] = None) -> dict:
         """Compute semantic diff.
 
-        NOTE: With SQLite storage, historical diff via git refs is not meaningful.
-        Use time-travel tools (get_state_at, diff_timerange) instead.
+        .. deprecated:: 0.4.0
+            Historical diff not available with SQLite storage.
+            Use time-travel tools (get_state_at, diff_timerange) instead.
         """
+        warnings.warn(
+            "vcs.diff() is deprecated. Use time-travel tools (diff_timerange) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return {
             "from": ref_a,
             "to": ref_b or "working",

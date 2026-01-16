@@ -94,7 +94,7 @@ class BranchManager:
                     continue
 
                 branches.append(branch)
-            except Exception as e:
+            except (json.JSONDecodeError, KeyError, TypeError, OSError) as e:
                 logger.warning(f"Skipping malformed branch file {path.name}: {e}")
                 continue
 
@@ -252,6 +252,7 @@ class BranchManager:
         """Resolve seed references to entity IDs.
 
         Seeds can be entity IDs or entity names.
+        Uses O(1) name index lookup instead of O(n) entity scan.
         """
         resolved = set()
 
@@ -261,11 +262,10 @@ class BranchManager:
                 resolved.add(seed)
                 continue
 
-            # Check if it's an entity name (case-insensitive)
-            for eid, entity in state.entities.items():
-                if entity.name.lower() == seed.lower():
-                    resolved.add(eid)
-                    break
+            # Check if it's an entity name using O(1) index
+            eid = state.get_entity_id_by_name(seed)
+            if eid:
+                resolved.add(eid)
 
         return resolved
 
@@ -276,6 +276,7 @@ class BranchManager:
 
         Uses BFS to find all entities within `depth` hops of any seed.
         Also includes all relations between included entities.
+        Uses O(k) relation index lookups instead of O(n) full scans.
 
         Returns:
             (entity_ids, relation_ids) for the subgraph
@@ -295,14 +296,10 @@ class BranchManager:
                 entity_ids.add(eid)
 
                 if hop < depth:  # Don't expand on last hop
-                    # Get relations for this entity
-                    for rel in state.relations:
-                        if rel.from_entity == eid:
-                            neighbor = rel.to_entity
-                        elif rel.to_entity == eid:
-                            neighbor = rel.from_entity
-                        else:
-                            continue
+                    # Get neighbors using O(k) index lookup
+                    for rel in state.get_relations_for(eid):
+                        # Determine neighbor (the other end of the relation)
+                        neighbor = rel.to_entity if rel.from_entity == eid else rel.from_entity
 
                         if neighbor not in entity_ids:
                             next_frontier.add(neighbor)
@@ -327,7 +324,7 @@ class BranchManager:
                 cwd=self.memory_dir,
             )
             return result.stdout.strip()[:7] if result.returncode == 0 else None
-        except Exception as e:
+        except (OSError, FileNotFoundError, subprocess.SubprocessError) as e:
             logger.debug(f"Could not get current commit (not in git repo?): {e}")
             return None
 
@@ -397,12 +394,8 @@ class BranchManager:
             to_remove = set()
 
             for rid in branch.relation_ids:
-                # Find the relation
-                rel = None
-                for r in state.relations:
-                    if r.id == rid:
-                        rel = r
-                        break
+                # Find the relation using O(1) index lookup
+                rel = state.get_relation_by_id(rid)
 
                 if rel is None:
                     to_remove.add(rid)

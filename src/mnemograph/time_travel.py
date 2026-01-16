@@ -45,6 +45,15 @@ class TimeTraveler:
         self._get_event_store = event_store_getter
         self._emit_event = emit_event
 
+    def _normalize_timestamp(self, ts: str | datetime) -> datetime:
+        """Convert string or datetime to timezone-aware datetime."""
+        if isinstance(ts, str):
+            return parse_time_reference(ts)
+        # Ensure timezone-aware (assume UTC if naive)
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts
+
     def state_at(self, timestamp: str | datetime) -> GraphState:
         """Get graph state at a specific point in time.
 
@@ -55,14 +64,7 @@ class TimeTraveler:
         Returns:
             GraphState as it existed at that timestamp
         """
-        if isinstance(timestamp, str):
-            ts = parse_time_reference(timestamp)
-        else:
-            ts = timestamp
-            # Ensure timezone-aware (assume UTC if naive)
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-
+        ts = self._normalize_timestamp(timestamp)
         events = self._get_event_store().read_all()
         return materialize_at(events, ts)
 
@@ -80,17 +82,8 @@ class TimeTraveler:
         Returns:
             List of events in the range
         """
-        if isinstance(start, str):
-            start_ts = parse_time_reference(start)
-        else:
-            start_ts = start
-
-        if end is None:
-            end_ts = datetime.now(timezone.utc)
-        elif isinstance(end, str):
-            end_ts = parse_time_reference(end)
-        else:
-            end_ts = end
+        start_ts = self._normalize_timestamp(start)
+        end_ts = self._normalize_timestamp(end) if end else datetime.now(timezone.utc)
 
         events = self._get_event_store().read_all()
         return [e for e in events if start_ts <= e.ts <= end_ts]
@@ -109,17 +102,8 @@ class TimeTraveler:
         Returns:
             Dict with entities (added/removed/modified) and relations (added/removed)
         """
-        if isinstance(start, str):
-            start_ts = parse_time_reference(start)
-        else:
-            start_ts = start
-
-        if end is None:
-            end_ts = datetime.now(timezone.utc)
-        elif isinstance(end, str):
-            end_ts = parse_time_reference(end)
-        else:
-            end_ts = end
+        start_ts = self._normalize_timestamp(start)
+        end_ts = self._normalize_timestamp(end) if end else datetime.now(timezone.utc)
 
         events = self._get_event_store().read_all()
         state_start = materialize_at(events, start_ts)

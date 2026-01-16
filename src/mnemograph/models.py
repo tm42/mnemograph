@@ -93,14 +93,9 @@ class Relation(BaseModel):
 
         Uses exponential decay with 30-day half-life.
         """
-        import math
-        from datetime import timezone
+        from .weights import compute_recency_score
 
-        now = datetime.now(timezone.utc)
-        days_since = (now - self.last_accessed).total_seconds() / 86400
-        half_life = 30.0
-        decay_rate = 0.693 / half_life  # ln(2) / half_life
-        return max(0.0, min(1.0, math.exp(-decay_rate * days_since)))
+        return compute_recency_score(self.last_accessed)
 
     @property
     def weight(self) -> float:
@@ -108,10 +103,16 @@ class Relation(BaseModel):
 
         Formula: 0.4 * recency + 0.3 * co_access + 0.3 * explicit
         """
+        from .constants import (
+            WEIGHT_RECENCY_COEFF,
+            WEIGHT_CO_ACCESS_COEFF,
+            WEIGHT_EXPLICIT_COEFF,
+        )
+
         return (
-            0.4 * self.recency_score +
-            0.3 * self.co_access_score +
-            0.3 * self.explicit_weight
+            WEIGHT_RECENCY_COEFF * self.recency_score +
+            WEIGHT_CO_ACCESS_COEFF * self.co_access_score +
+            WEIGHT_EXPLICIT_COEFF * self.explicit_weight
         )
 
     def to_summary(self) -> dict:

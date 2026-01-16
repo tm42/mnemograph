@@ -120,7 +120,7 @@ class VectorIndex:
                 error="Embedding model loads on first search",
             )
             return True
-        except Exception as e:
+        except (ImportError, OSError, AttributeError) as e:
             self.health = VectorHealth(
                 status=VectorStatus.UNAVAILABLE,
                 error=f"sqlite-vec extension failed: {e}",
@@ -130,6 +130,8 @@ class VectorIndex:
 
     def _check_tables_exist(self) -> bool:
         """Check if vector tables already exist in database."""
+        import sqlite3
+
         if self._conn is None:
             return False
         try:
@@ -137,7 +139,8 @@ class VectorIndex:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_meta'"
             ).fetchone()
             return result is not None
-        except Exception:
+        except sqlite3.Error as e:
+            logger.debug(f"Table check failed: {e}")
             return False
 
     def _try_load_model(self) -> bool:
@@ -159,7 +162,7 @@ class VectorIndex:
                 dimension=self._dims,
             )
             return True
-        except Exception as e:
+        except (ImportError, OSError, RuntimeError) as e:
             self.health = VectorHealth(
                 status=VectorStatus.DEGRADED,
                 error=f"Embedding model failed: {e}",
@@ -177,9 +180,11 @@ class VectorIndex:
     @property
     def dims(self) -> int:
         """Get embedding dimensions (loads model if needed)."""
+        from .constants import DEFAULT_EMBEDDING_DIMENSION
+
         if self._dims is None:
             _ = self.model  # Force load
-        return self._dims or 384  # Default fallback
+        return self._dims or DEFAULT_EMBEDDING_DIMENSION
 
     @property
     def conn(self) -> sqlite3.Connection | None:
@@ -311,12 +316,14 @@ class VectorIndex:
             return
 
         # Clear all vector data
+        import sqlite3
+
         try:
             conn.execute("DELETE FROM entity_vectors")
             conn.execute("DELETE FROM entity_meta")
             conn.commit()
             logger.debug("Vector index invalidated")
-        except Exception as e:
+        except sqlite3.Error as e:
             logger.warning(f"Failed to invalidate vector index: {e}")
 
     def search(
@@ -427,7 +434,7 @@ class VectorIndex:
                 return 0.0
 
             return float(dot / (norm1 * norm2))
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError) as e:
             logger.debug(f"Text similarity computation failed: {e}")
             return 0.0
 

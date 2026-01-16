@@ -85,7 +85,7 @@ def parse_time_reference(ref: str, now: datetime | None = None) -> datetime:
             parsed = parsed.replace(tzinfo=timezone.utc)
 
         return parsed
-    except Exception as e:
+    except (ValueError, OverflowError, dateparser.ParserError) as e:
         raise ValueError(f"Cannot parse time reference: {ref}") from e
 
 
@@ -99,6 +99,15 @@ def format_relative_time(dt: datetime, now: datetime | None = None) -> str:
     Returns:
         Human-readable string like "2 days ago", "3 weeks ago"
     """
+    from .constants import (
+        SECONDS_PER_MINUTE,
+        SECONDS_PER_HOUR,
+        SECONDS_PER_DAY,
+        SECONDS_PER_WEEK,
+        SECONDS_PER_MONTH,
+        SECONDS_PER_YEAR,
+    )
+
     if now is None:
         now = datetime.now(timezone.utc)
 
@@ -109,23 +118,23 @@ def format_relative_time(dt: datetime, now: datetime | None = None) -> str:
 
     seconds = int(diff.total_seconds())
 
-    if seconds < 60:
+    if seconds < SECONDS_PER_MINUTE:
         return f"{seconds} seconds ago"
-    elif seconds < 3600:
-        minutes = seconds // 60
+    elif seconds < SECONDS_PER_HOUR:
+        minutes = seconds // SECONDS_PER_MINUTE
         return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-    elif seconds < 86400:
-        hours = seconds // 3600
+    elif seconds < SECONDS_PER_DAY:
+        hours = seconds // SECONDS_PER_HOUR
         return f"{hours} hour{'s' if hours != 1 else ''} ago"
-    elif seconds < 604800:
-        days = seconds // 86400
+    elif seconds < SECONDS_PER_WEEK:
+        days = seconds // SECONDS_PER_DAY
         return f"{days} day{'s' if days != 1 else ''} ago"
-    elif seconds < 2592000:
-        weeks = seconds // 604800
+    elif seconds < SECONDS_PER_MONTH:
+        weeks = seconds // SECONDS_PER_WEEK
         return f"{weeks} week{'s' if weeks != 1 else ''} ago"
-    elif seconds < 31536000:
-        months = seconds // 2592000
+    elif seconds < SECONDS_PER_YEAR:
+        months = seconds // SECONDS_PER_MONTH
         return f"{months} month{'s' if months != 1 else ''} ago"
     else:
-        years = seconds // 31536000
+        years = seconds // SECONDS_PER_YEAR
         return f"{years} year{'s' if years != 1 else ''} ago"

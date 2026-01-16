@@ -232,39 +232,11 @@ def get_deep_context(
 
 
 def _find_entity_by_name(state: GraphState, name: str) -> Entity | None:
-    """Find entity by name."""
-    for e in state.entities.values():
-        if e.name == name:
-            return e
+    """Find entity by name using O(1) index lookup."""
+    entity_id = state.get_entity_id_by_name(name)
+    if entity_id:
+        return state.entities.get(entity_id)
     return None
-
-
-def _get_neighbors_bfs(state: GraphState, entity_id: str, max_hops: int) -> list[Entity]:
-    """BFS to find neighbors within N hops."""
-    visited: set[str] = {entity_id}
-    frontier: list[str] = [entity_id]
-    result: list[Entity] = []
-
-    if entity_id in state.entities:
-        result.append(state.entities[entity_id])
-
-    for _ in range(max_hops):
-        next_frontier: list[str] = []
-        for eid in frontier:
-            for r in state.relations:
-                if r.from_entity == eid and r.to_entity not in visited:
-                    visited.add(r.to_entity)
-                    next_frontier.append(r.to_entity)
-                    if r.to_entity in state.entities:
-                        result.append(state.entities[r.to_entity])
-                elif r.to_entity == eid and r.from_entity not in visited:
-                    visited.add(r.from_entity)
-                    next_frontier.append(r.from_entity)
-                    if r.from_entity in state.entities:
-                        result.append(state.entities[r.from_entity])
-        frontier = next_frontier
-
-    return result
 
 
 def _format_entities_with_relations(

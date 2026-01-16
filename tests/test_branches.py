@@ -292,7 +292,9 @@ def sample_state():
         Relation(id="r3", from_entity="e3", to_entity="e4", type="relates_to"),
         Relation(id="r4", from_entity="e1", to_entity="e5", type="relates_to"),
     ]
-    return GraphState(entities=entities, relations=relations)
+    state = GraphState(entities=entities, relations=relations)
+    state._rebuild_indices()  # Populate indices for O(1) lookups
+    return state
 
 
 @pytest.fixture

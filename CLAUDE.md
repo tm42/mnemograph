@@ -32,6 +32,8 @@ This is NOT another "remember user likes dark mode" system. This is a **shared k
 - **Time Travel** (`time_travel.py`): Event rewind and state restoration
 - **Similarity** (`similarity.py`): Duplicate detection and entity matching
 - **Branches** (`branches.py`): Filtered views of the knowledge graph
+- **Constants** (`constants.py`): Centralized tunable parameters (weights, limits, time constants)
+- **Weights** (`weights.py`): Edge weight computation and weighted traversal
 
 **Storage** (`<project>/.claude/memory/`):
 - `mnemograph.db` — SQLite database (events + vectors in one file)
@@ -143,9 +145,16 @@ interface MemoryEvent {
 
 ---
 
-## Implementation Status (v0.4.0)
+## Implementation Status (v0.4.1)
 
 **Completed**: Event sourcing, entity types, vector index, tiered retrieval, unified CLI (`mnemograph`), time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
+
+**v0.4.1 Changes** (Audit Refactor):
+- Constants module — centralized magic numbers in `constants.py` for easy tuning
+- Narrowed exceptions — specific exception types instead of bare `except Exception`
+- Helper extraction — `_row_to_event()` in events.py, `_normalize_timestamp()` in time_travel.py
+- Deprecation warnings — `vcs.show()` and `vcs.diff()` deprecated with proper warnings
+- Code deduplication — `Relation.recency_score` delegates to `weights.compute_recency_score()`
 
 **v0.4.0 Changes**:
 - SQLite migration — events and vectors now in single `mnemograph.db` file (was JSONL + separate vectors.db)
@@ -160,11 +169,13 @@ interface MemoryEvent {
 
 ## Development Workflow
 
+**uv location**: `~/.local/bin/uv` (add to PATH or use full path)
+
 ### Running Tests
 ```bash
-uv run python -m pytest -x -q           # Quick test run
-uv run python -m pytest --cov           # With coverage (enforces 75% min)
-uv run python -m pytest --cov --cov-report=html  # HTML coverage report
+~/.local/bin/uv run python -m pytest -x -q           # Quick test run
+~/.local/bin/uv run python -m pytest --cov           # With coverage (enforces 75% min)
+~/.local/bin/uv run python -m pytest --cov --cov-report=html  # HTML coverage report
 ```
 
 ### Release Workflow

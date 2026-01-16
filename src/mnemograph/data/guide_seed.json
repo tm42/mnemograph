@@ -1,0 +1,204 @@
+{
+  "topic": {
+    "name": "topic/mnemograph-guide",
+    "type": "entity",
+    "observations": [
+      "Living guide for using mnemograph effectively. Agents can add learnings here.",
+      "This guide was auto-seeded on first run. Explore with: recall('mnemograph', depth='medium')"
+    ]
+  },
+  "entities": [
+    {
+      "name": "mnemograph/core-workflow",
+      "type": "pattern",
+      "observations": [
+        "Start every session with session_start() to get orientation and quick_start guide.",
+        "Use recall(depth='shallow') for overview, 'medium' for task context, 'deep' for exploration.",
+        "For large results, recall returns structure-only — use open_nodes() to expand specific entities.",
+        "Store new knowledge with remember(name, type, observations, relations) — one atomic call.",
+        "Add facts to existing entities with add_observations(entity, [...]).",
+        "Run get_graph_health() periodically to find orphans, duplicates, and maintenance tasks."
+      ]
+    },
+    {
+      "name": "mnemograph/scope-decision",
+      "type": "decision",
+      "observations": [
+        "ALWAYS ask user on first setup: 'Should memory be project-local or global?'",
+        "Project-local (.claude/memory): repo-specific architecture, decisions, patterns.",
+        "Global (~/.claude/memory): cross-project learnings, personal preferences, universal patterns.",
+        "Configure via MEMORY_PATH env var. CLI uses --global flag for global memory.",
+        "This decision affects whether knowledge transfers between projects."
+      ]
+    },
+    {
+      "name": "mnemograph/entity-types",
+      "type": "concept",
+      "observations": [
+        "concept: Ideas, patterns, approaches (e.g., 'Repository pattern', 'Event sourcing').",
+        "decision: Choices WITH RATIONALE (e.g., 'Chose SQLite for simplicity because...').",
+        "project: Codebases, systems (e.g., 'auth-service', 'mnemograph').",
+        "pattern: Recurring code patterns (e.g., 'Error handling with Result type').",
+        "question: Open unknowns to revisit (e.g., 'Should we add real-time sync?').",
+        "learning: Discoveries made together (e.g., 'pytest fixtures simplify test setup').",
+        "entity: Generic catch-all (people, files, etc.)."
+      ]
+    },
+    {
+      "name": "mnemograph/topic-convention",
+      "type": "pattern",
+      "observations": [
+        "Use topic/ prefix to create grouping entry points: topic/auth, topic/testing, topic/api-design.",
+        "Link entities to topics with 'part_of' or 'relates_to' relations.",
+        "This makes it easy to query 'what do we know about auth?' by exploring topic/auth.",
+        "Standard topics: topic/projects, topic/decisions, topic/patterns, topic/learnings, topic/questions."
+      ]
+    },
+    {
+      "name": "mnemograph/duplicate-prevention",
+      "type": "pattern",
+      "observations": [
+        "Before creating entities, consider: does this already exist?",
+        "find_similar(name) checks for duplicates — >80% similarity auto-blocks creation.",
+        "If blocked, use add_observations() to extend the existing entity instead.",
+        "merge_entities(source, target) consolidates duplicates — moves observations and redirects relations.",
+        "Duplicates fragment knowledge and make recall harder. Prevention is better than cleanup."
+      ]
+    },
+    {
+      "name": "mnemograph/retrieval-tiers",
+      "type": "concept",
+      "observations": [
+        "shallow (~500 tokens): Summary stats, recent entities, hot topics. Use for orientation.",
+        "medium (~2000 tokens): Semantic search + 1-hop neighbors. Use for task-specific context.",
+        "deep (~5000 tokens): Multi-hop weighted subgraph. Use for exploration and understanding.",
+        "For large results, recall() returns structure-only — use open_nodes() to expand.",
+        "Token budgets help manage context windows. Request only what you need.",
+        "Weights prioritize: 40% recency, 30% co-access (learned), 30% explicit importance."
+      ]
+    },
+    {
+      "name": "mnemograph/recovery-tools",
+      "type": "concept",
+      "observations": [
+        "reload(): Sync MCP server with disk after git operations or external edits.",
+        "rewind(steps=1): Quick undo via git — fast but audit trail only in git history.",
+        "restore_state_at(timestamp): Event-based restore with full audit trail in events.",
+        "get_state_at(timestamp): Preview past state before restoring.",
+        "diff_timerange(start, end): See what changed between two points in time.",
+        "Event sourcing means nothing is truly lost — you can always recover."
+      ]
+    },
+    {
+      "name": "mnemograph/maintenance-rhythm",
+      "type": "pattern",
+      "observations": [
+        "Run get_graph_health() periodically (weekly or when graph feels cluttered).",
+        "Fix orphan entities: connect them, merge them, or delete if irrelevant.",
+        "Merge duplicates promptly — they fragment knowledge and confuse recall.",
+        "Use get_weak_relations() to find pruning candidates (low-weight noise).",
+        "Visualize with 'mnemograph graph' to see structure and spot issues."
+      ]
+    },
+    {
+      "name": "mnemograph/visualization",
+      "type": "concept",
+      "observations": [
+        "Run 'mnemograph graph' to open interactive D3.js viewer in browser.",
+        "Use 'mnemograph graph --watch' for live refresh mode with Refresh button.",
+        "Layouts: force-directed (default), radial (hubs at center), clustered (by component).",
+        "Color modes: by entity type, connected component, or degree centrality.",
+        "Edge weight slider filters connections by strength — useful for large graphs.",
+        "Visualization helps understand graph structure and spot orphans/clusters."
+      ]
+    },
+    {
+      "name": "mnemograph/what-to-store",
+      "type": "pattern",
+      "observations": [
+        "STORE: Decisions with rationale — 'Chose X because Y' is invaluable across sessions.",
+        "STORE: Patterns discovered — recurring approaches that work well in this codebase.",
+        "STORE: Open questions — unknowns to revisit, things to investigate later.",
+        "STORE: Project structure insights — where things live, how components connect.",
+        "SKIP: Ephemeral task details — 'fixed bug in line 42' is noise.",
+        "SKIP: Obvious facts — things easily discoverable from code itself.",
+        "SKIP: Temporary state — 'currently working on X' belongs in todo, not memory.",
+        "Ask: 'Would future-me benefit from knowing this?' If yes, store it."
+      ]
+    },
+    {
+      "name": "mnemograph/knowledge-structure",
+      "type": "pattern",
+      "observations": [
+        "Entity names should be specific and searchable: 'auth/jwt-validation' not 'JWT stuff'.",
+        "Use consistent naming: 'auth/X', 'api/X', 'pattern/X' for discoverability.",
+        "Observations should be atomic facts, not paragraphs. One idea per observation.",
+        "Relations should use active verbs: 'implements', 'uses', 'decided_for', 'contradicts'.",
+        "Link to topics for browsability: every entity should connect to at least one topic.",
+        "Decisions need rationale: 'Chose SQLite' is useless without 'because simplicity > scale'."
+      ]
+    },
+    {
+      "name": "mnemograph/anti-patterns",
+      "type": "pattern",
+      "observations": [
+        "AVOID: Creating entities for every file or function — that's what code search is for.",
+        "AVOID: Storing conversation summaries — memory is for durable knowledge, not chat logs.",
+        "AVOID: Vague entity names like 'stuff', 'misc', 'notes' — be specific.",
+        "AVOID: Orphan entities — if it's not connected, it won't be found.",
+        "AVOID: Duplicate creation without checking — always consider find_similar() first.",
+        "AVOID: Over-observation — 15+ observations on one entity signals need to split."
+      ]
+    },
+    {
+      "name": "mnemograph/good-relation-types",
+      "type": "concept",
+      "observations": [
+        "implements: 'auth-service implements oauth2-pattern'",
+        "uses: 'api-gateway uses rate-limiting'",
+        "decided_for: 'sqlite-decision decided_for simplicity'",
+        "part_of: 'jwt-validation part_of auth-service'",
+        "relates_to: loose association when nothing else fits",
+        "contradicts: 'microservices contradicts monolith' — capture tensions",
+        "supersedes: 'new-approach supersedes old-approach' — track evolution",
+        "depends_on: 'feature-x depends_on feature-y'"
+      ]
+    },
+    {
+      "name": "mnemograph/human-curation",
+      "type": "concept",
+      "observations": [
+        "Humans can review agent changes: 'mnemograph log --since yesterday'",
+        "Humans can visualize structure: 'mnemograph graph --watch'",
+        "Humans can check health: 'mnemograph health --fix' for interactive cleanup",
+        "Humans can undo mistakes: 'mnemograph rewind' or 'mnemograph restore --to <timestamp>'",
+        "Memory is a collaboration — agents propose, humans can curate.",
+        "Periodic human review keeps memory focused and accurate."
+      ]
+    }
+  ],
+  "relations": [
+    ["mnemograph/core-workflow", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/scope-decision", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/entity-types", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/topic-convention", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/duplicate-prevention", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/retrieval-tiers", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/recovery-tools", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/maintenance-rhythm", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/visualization", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/what-to-store", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/knowledge-structure", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/anti-patterns", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/good-relation-types", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/human-curation", "topic/mnemograph-guide", "part_of"],
+    ["mnemograph/core-workflow", "mnemograph/retrieval-tiers", "uses"],
+    ["mnemograph/maintenance-rhythm", "mnemograph/duplicate-prevention", "reinforces"],
+    ["mnemograph/maintenance-rhythm", "mnemograph/visualization", "uses"],
+    ["mnemograph/what-to-store", "mnemograph/anti-patterns", "complements"],
+    ["mnemograph/knowledge-structure", "mnemograph/good-relation-types", "uses"],
+    ["mnemograph/knowledge-structure", "mnemograph/entity-types", "uses"],
+    ["mnemograph/human-curation", "mnemograph/visualization", "uses"],
+    ["mnemograph/human-curation", "mnemograph/recovery-tools", "uses"]
+  ]
+}

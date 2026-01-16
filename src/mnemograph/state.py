@@ -19,6 +19,7 @@ class GraphState:
     - _outgoing: entity ID -> list of relations from it
     - _incoming: entity ID -> list of relations to it
     - _connected_entities: set of entity IDs with any relation
+    - _relations_by_id: relation ID -> Relation object
     """
 
     entities: dict[str, Entity] = field(default_factory=dict)  # id -> Entity
@@ -30,6 +31,7 @@ class GraphState:
     _outgoing: dict[str, list[Relation]] = field(default_factory=dict)
     _incoming: dict[str, list[Relation]] = field(default_factory=dict)
     _connected_entities: set[str] = field(default_factory=set)
+    _relations_by_id: dict[str, Relation] = field(default_factory=dict)
 
     def get_entity_id_by_name(self, name: str) -> str | None:
         """O(1) lookup of entity ID by name."""
@@ -52,11 +54,8 @@ class GraphState:
         return self.get_outgoing_relations(entity_id) + self.get_incoming_relations(entity_id)
 
     def get_relation_by_id(self, relation_id: str) -> Relation | None:
-        """Get a relation by its ID."""
-        for r in self.relations:
-            if r.id == relation_id:
-                return r
-        return None
+        """O(1) lookup of relation by ID."""
+        return self._relations_by_id.get(relation_id)
 
     def _rebuild_indices(self) -> None:
         """Rebuild all indices from entities and relations.
@@ -70,12 +69,14 @@ class GraphState:
         self._outgoing = {}
         self._incoming = {}
         self._connected_entities = set()
+        self._relations_by_id = {}
 
         for rel in self.relations:
             self._outgoing.setdefault(rel.from_entity, []).append(rel)
             self._incoming.setdefault(rel.to_entity, []).append(rel)
             self._connected_entities.add(rel.from_entity)
             self._connected_entities.add(rel.to_entity)
+            self._relations_by_id[rel.id] = rel
 
     def check_index_consistency(self) -> list[str]:
         """Validate that indices match base state. Returns list of errors.
@@ -142,6 +143,21 @@ class GraphState:
                 errors.append(f"_connected_entities missing: {missing}")
             if extra:
                 errors.append(f"_connected_entities has stale entries: {extra}")
+
+        # 5. Check _relations_by_id matches relations list
+        expected_by_id = {r.id: r for r in self.relations}
+        if set(self._relations_by_id.keys()) != set(expected_by_id.keys()):
+            missing = set(expected_by_id.keys()) - set(self._relations_by_id.keys())
+            extra = set(self._relations_by_id.keys()) - set(expected_by_id.keys())
+            if missing:
+                errors.append(f"_relations_by_id missing: {missing}")
+            if extra:
+                errors.append(f"_relations_by_id has stale entries: {extra}")
+        else:
+            # Check same object references
+            for rid, rel in expected_by_id.items():
+                if self._relations_by_id.get(rid) is not rel:
+                    errors.append(f"_relations_by_id[{rid}] points to different object")
 
         return errors
 
@@ -221,6 +237,7 @@ def apply_event(state: GraphState, event: MemoryEvent) -> None:
         state._incoming.setdefault(relation.to_entity, []).append(relation)
         state._connected_entities.add(relation.from_entity)
         state._connected_entities.add(relation.to_entity)
+        state._relations_by_id[relation.id] = relation
 
     elif op == "delete_relation":
         # Find and remove matching relation
@@ -272,6 +289,7 @@ def apply_event(state: GraphState, event: MemoryEvent) -> None:
         state._outgoing.clear()
         state._incoming.clear()
         state._connected_entities.clear()
+        state._relations_by_id.clear()
 
     elif op == "compact":
         # Compact is a marker event — actual state changes come from
@@ -283,6 +301,7 @@ def apply_event(state: GraphState, event: MemoryEvent) -> None:
         state._outgoing.clear()
         state._incoming.clear()
         state._connected_entities.clear()
+        state._relations_by_id.clear()
 
     state.last_event_id = event.id
 
@@ -292,6 +311,9 @@ def _remove_relation_from_indices(state: GraphState, rel: Relation) -> None:
 
     Also updates _connected_entities if entity no longer has any relations.
     """
+    # Remove from _relations_by_id
+    state._relations_by_id.pop(rel.id, None)
+
     # Remove from outgoing
     if rel.from_entity in state._outgoing:
         state._outgoing[rel.from_entity] = [

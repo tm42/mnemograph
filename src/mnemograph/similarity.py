@@ -176,7 +176,7 @@ class SimilarityChecker:
         try:
             vector_index = self._get_vector_index()
             return vector_index.text_similarity(name1, name2)
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, AttributeError) as e:
             logger.debug(f"Embedding similarity lookup failed: {e}")
 
         return 0.0

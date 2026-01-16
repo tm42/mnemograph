@@ -243,15 +243,17 @@ def _get_relations_by_type(
     entity_ids: set[str],
     relation_type: str,
 ) -> list[str]:
-    """Get target entity names for outgoing relations of a specific type."""
+    """Get target entity names for outgoing relations of a specific type.
+
+    Uses O(k) index lookup where k = edges from entity, instead of O(n) full scan.
+    """
     targets: list[str] = []
 
-    for rel in state.relations:
-        if rel.from_entity == entity_id and rel.type == relation_type:
-            if rel.to_entity in entity_ids:
-                target = state.entities.get(rel.to_entity)
-                if target:
-                    targets.append(target.name)
+    for rel in state.get_outgoing_relations(entity_id):
+        if rel.type == relation_type and rel.to_entity in entity_ids:
+            target = state.entities.get(rel.to_entity)
+            if target:
+                targets.append(target.name)
 
     return targets
 

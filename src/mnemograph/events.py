@@ -42,6 +42,19 @@ class EventStore:
             self._conn.execute("PRAGMA busy_timeout=30000")
         return self._conn
 
+    def _row_to_event(self, row: sqlite3.Row) -> "MemoryEvent":
+        """Convert database row to MemoryEvent."""
+        from .models import MemoryEvent
+
+        return MemoryEvent(
+            id=row["id"],
+            ts=row["ts"],
+            op=row["op"],
+            session_id=row["session_id"],
+            source=row["source"],
+            data=json.loads(row["data"]),
+        )
+
     def _init_db(self):
         """Initialize database schema."""
         conn = self._get_conn()
@@ -150,8 +163,6 @@ class EventStore:
         Returns:
             List of valid events.
         """
-        from .models import MemoryEvent
-
         conn = self._get_conn()
         cursor = conn.execute(
             "SELECT id, ts, op, session_id, source, data FROM events ORDER BY ts, id"
@@ -162,16 +173,9 @@ class EventStore:
 
         for row in cursor:
             try:
-                event = MemoryEvent(
-                    id=row["id"],
-                    ts=row["ts"],
-                    op=row["op"],
-                    session_id=row["session_id"],
-                    source=row["source"],
-                    data=json.loads(row["data"]),
-                )
+                event = self._row_to_event(row)
                 events.append(event)
-            except Exception as e:
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                 if tolerant:
                     errors.append((row["id"], str(e)))
                     logger.warning(f"Skipping malformed event {row['id']}: {e}")
@@ -189,8 +193,6 @@ class EventStore:
         """Read events after a given event ID (for incremental replay)."""
         if since_id is None:
             return self.read_all()
-
-        from .models import MemoryEvent
 
         conn = self._get_conn()
 
@@ -212,24 +214,10 @@ class EventStore:
             (since_ts, since_ts, since_id),
         )
 
-        events = []
-        for row in cursor:
-            event = MemoryEvent(
-                id=row["id"],
-                ts=row["ts"],
-                op=row["op"],
-                session_id=row["session_id"],
-                source=row["source"],
-                data=json.loads(row["data"]),
-            )
-            events.append(event)
-
-        return events
+        return [self._row_to_event(row) for row in cursor]
 
     def read_by_session(self, session_id: str) -> list[MemoryEvent]:
         """Read all events for a specific session."""
-        from .models import MemoryEvent
-
         conn = self._get_conn()
         cursor = conn.execute(
             """
@@ -240,19 +228,7 @@ class EventStore:
             (session_id,),
         )
 
-        events = []
-        for row in cursor:
-            event = MemoryEvent(
-                id=row["id"],
-                ts=row["ts"],
-                op=row["op"],
-                session_id=row["session_id"],
-                source=row["source"],
-                data=json.loads(row["data"]),
-            )
-            events.append(event)
-
-        return events
+        return [self._row_to_event(row) for row in cursor]
 
     def count(self) -> int:
         """Count events."""

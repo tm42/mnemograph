@@ -37,14 +37,16 @@ def compute_recency_score(
         >>> compute_recency_score(now - timedelta(days=60))  # 60 days ago
         0.25
     """
+    from .constants import SECONDS_PER_DAY, LN_2
+
     reference = reference_time or datetime.now(timezone.utc)
-    days_since = (reference - last_accessed).total_seconds() / 86400
+    days_since = (reference - last_accessed).total_seconds() / SECONDS_PER_DAY
 
     if days_since < 0:
         return 1.0  # Future date, treat as fresh
 
     # Exponential decay: score = e^(-λt) where λ = ln(2) / half_life
-    decay_rate = 0.693 / half_life_days  # ln(2) ≈ 0.693
+    decay_rate = LN_2 / half_life_days
     score = math.exp(-decay_rate * days_since)
 
     return max(0.0, min(1.0, score))
