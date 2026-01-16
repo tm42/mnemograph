@@ -145,11 +145,11 @@ interface MemoryEvent {
 
 ---
 
-## Implementation Status (v0.4.1)
+## Implementation Status (v0.4.2)
 
 **Completed**: Event sourcing, entity types, vector index, tiered retrieval, unified CLI (`mnemograph`), time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
 
-**v0.4.1 Changes** (Audit Refactor):
+**v0.4.2 Changes** (Audit Refactor):
 - Constants module — centralized magic numbers in `constants.py` for easy tuning
 - Narrowed exceptions — specific exception types instead of bare `except Exception`
 - Helper extraction — `_row_to_event()` in events.py, `_normalize_timestamp()` in time_travel.py
