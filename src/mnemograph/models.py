@@ -27,7 +27,6 @@ class Observation(BaseModel):
     text: str
     ts: datetime = Field(default_factory=utc_now)
     source: str  # session ID or "user"
-    confidence: float | None = None  # 0-1, optional
 
 
 EntityType = Literal[
@@ -51,8 +50,6 @@ class Entity(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     created_by: str = ""  # session ID
-    access_count: int = 0
-    last_accessed: datetime | None = None
 
     def to_summary(self) -> dict:
         """Return a compact summary of this entity."""
@@ -142,6 +139,7 @@ EventOp = Literal[
     "update_weight",  # Explicit weight change on a relation
     "clear_graph",  # Reset graph to empty state
     "compact",  # History compaction — clears state, followed by recreate events
+    "restore_to",  # Time-travel: restore to state at timestamp (replaces clear+recreate)
 ]
 
 

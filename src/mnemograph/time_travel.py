@@ -225,16 +225,15 @@ class TimeTraveler:
     ) -> dict:
         """Restore graph to state at a specific timestamp.
 
-        This method:
-        1. Materializes state at that timestamp
-        2. Emits clear_graph event
-        3. Emits events to recreate that state
+        Emits a single restore_to marker event with the target timestamp.
+        The state materialization logic (resolve_restores in state.py) filters
+        events to recreate the state at that point in time.
 
         Full audit trail preserved — events show the restore happened.
 
         Args:
             timestamp: ISO format or relative ("2 hours ago", "yesterday")
-            reason: Why restoring (recorded in clear event)
+            reason: Why restoring (recorded in restore_to event)
             state_getter: Callable to get current state (for count after restore)
 
         Returns:
@@ -260,22 +259,15 @@ class TimeTraveler:
                 "tip": "Use get_state_at() to preview state before restoring.",
             }
 
-        # Clear current graph (recorded in events)
-        clear_reason = f"Restoring to {timestamp}"
+        # Emit single restore_to marker event
+        restore_reason = f"Restoring to {timestamp}"
         if reason:
-            clear_reason += f": {reason}"
-        self._emit_event("clear_graph", {"reason": clear_reason})
+            restore_reason += f": {reason}"
 
-        # Recreate entities from past state (recorded in events)
-        for entity in past_state.entities.values():
-            # Emit create_entity with original data
-            entity_data = entity.model_dump(mode="json")
-            self._emit_event("create_entity", entity_data)
-
-        # Recreate relations from past state
-        for relation in past_state.relations:
-            relation_data = relation.model_dump(mode="json")
-            self._emit_event("create_relation", relation_data)
+        self._emit_event("restore_to", {
+            "timestamp": ts.isoformat(),
+            "reason": restore_reason,
+        })
 
         # Get current state counts
         entity_count = len(past_state.entities)

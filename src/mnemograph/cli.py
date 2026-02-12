@@ -1133,8 +1133,6 @@ def relation_show(ctx, relation_id, as_json):
 
         meta = result["metadata"]
         console.print("[bold]Metadata:[/bold]")
-        console.print(f"  Access count: {meta['access_count']}")
-        console.print(f"  Last accessed: {meta['last_accessed']}")
         console.print(f"  Created at: {meta['created_at']}")
 
 

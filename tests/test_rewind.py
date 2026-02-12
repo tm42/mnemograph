@@ -138,7 +138,6 @@ def make_entity_data(id: str, name: str, ts: datetime) -> dict:
         "created_at": ts.isoformat(),
         "updated_at": ts.isoformat(),
         "created_by": "test",
-        "access_count": 0,
     }
 
 
@@ -439,11 +438,11 @@ class TestRestoreStateAt:
             )
 
             assert result["status"] == "restored"
-            # Check that clear_graph event has the reason
+            # Check that restore_to event has the reason
             events = engine.event_store.read_all()
-            clear_events = [e for e in events if e.op == "clear_graph"]
-            assert len(clear_events) >= 1
-            assert "Testing restore" in clear_events[-1].data.get("reason", "")
+            restore_events = [e for e in events if e.op == "restore_to"]
+            assert len(restore_events) >= 1
+            assert "Testing restore" in restore_events[-1].data.get("reason", "")
 
     def test_restore_empty_state_error(self):
         """Should error if no entities at timestamp."""

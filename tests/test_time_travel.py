@@ -36,7 +36,6 @@ def make_entity_data(id: str, name: str, ts: datetime) -> dict:
         "created_at": ts.isoformat(),
         "updated_at": ts.isoformat(),
         "created_by": "test",
-        "access_count": 0,
     }
 
 
@@ -492,8 +491,8 @@ class TestRestoreStateAt:
         # Should not have called emit
         emit_mock.assert_not_called()
 
-    def test_emits_clear_and_recreate_events(self):
-        """Should emit clear then recreate events."""
+    def test_emits_restore_to_event(self):
+        """Should emit single restore_to marker event."""
         ts = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
         events = [make_event("ev1", "create_entity", make_entity_data("e1", "Test", ts), ts)]
 
@@ -504,15 +503,15 @@ class TestRestoreStateAt:
         result = traveler.restore_state_at("2025-01-15")
 
         assert result["status"] == "restored"
-        # Should call emit for clear_graph and create_entity
-        assert emit_mock.call_count >= 2
-        # First call should be clear_graph
-        assert emit_mock.call_args_list[0][0][0] == "clear_graph"
-        # Second call should be create_entity
-        assert emit_mock.call_args_list[1][0][0] == "create_entity"
+        # Should call emit once for restore_to
+        assert emit_mock.call_count == 1
+        # Should be restore_to event
+        assert emit_mock.call_args_list[0][0][0] == "restore_to"
+        # Should include timestamp
+        assert "timestamp" in emit_mock.call_args_list[0][0][1]
 
-    def test_includes_reason_in_clear(self):
-        """Reason should be included in clear event."""
+    def test_includes_reason_in_restore_to(self):
+        """Reason should be included in restore_to event."""
         ts = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
         events = [make_event("ev1", "create_entity", make_entity_data("e1", "Test", ts), ts)]
 
@@ -522,12 +521,13 @@ class TestRestoreStateAt:
 
         traveler.restore_state_at("2025-01-15", reason="Testing restore")
 
-        # Check clear_graph was called with reason
-        clear_call = emit_mock.call_args_list[0]
-        assert "Testing restore" in clear_call[0][1]["reason"]
+        # Check restore_to was called with reason
+        restore_call = emit_mock.call_args_list[0]
+        assert restore_call[0][0] == "restore_to"
+        assert "Testing restore" in restore_call[0][1]["reason"]
 
-    def test_recreates_relations(self):
-        """Should recreate relations from past state."""
+    def test_handles_relations_in_restore(self):
+        """Should restore state with relations using single restore_to event."""
         ts = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
         events = [
             make_event("ev1", "create_entity", make_entity_data("e1", "A", ts), ts),
@@ -542,10 +542,12 @@ class TestRestoreStateAt:
         result = traveler.restore_state_at("2025-01-15")
 
         assert result["status"] == "restored"
-        # Should have: clear_graph, 2x create_entity, 1x create_relation
-        assert emit_mock.call_count == 4
-        ops = [call[0][0] for call in emit_mock.call_args_list]
-        assert "create_relation" in ops
+        # Should emit single restore_to event
+        assert emit_mock.call_count == 1
+        assert emit_mock.call_args_list[0][0][0] == "restore_to"
+        # Counts should reflect restored state (2 entities, 1 relation)
+        assert result["entities"] == 2
+        assert result["relations"] == 1
 
     def test_returns_counts(self):
         """Should return entity and relation counts."""
@@ -584,3 +586,145 @@ class TestRestoreStateAt:
 
         assert result["entities"] == 3
         state_getter.assert_called_once()
+
+
+# --- resolve_restores() Tests ---
+
+
+class TestResolveRestores:
+    """Tests for state.resolve_restores() function."""
+
+    def test_nested_restores(self):
+        """Should handle nested restore_to events recursively."""
+        from mnemograph.state import resolve_restores
+
+        # Timeline: T1 < T2 < T3 < T4 < T5
+        ts1 = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2025, 1, 12, 12, 0, 0, tzinfo=timezone.utc)
+        ts3 = datetime(2025, 1, 14, 12, 0, 0, tzinfo=timezone.utc)
+        ts4 = datetime(2025, 1, 16, 12, 0, 0, tzinfo=timezone.utc)
+        ts5 = datetime(2025, 1, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+        # Event sequence:
+        # - e1 at T1
+        # - e2 at T2
+        # - restore_to(T1) at T3 - restores to T1, so only e1 should be visible
+        # - e3 at T4 (after first restore)
+        # - restore_to(T3) at T5 - restores to T3, which itself had a restore
+        # Expected: resolve to [e1] (the state at T1, as restored at T3)
+
+        events = [
+            make_event("e1", "create_entity", make_entity_data("ent1", "First", ts1), ts1),
+            make_event("e2", "create_entity", make_entity_data("ent2", "Second", ts2), ts2),
+            make_event("restore1", "restore_to", {"timestamp": ts1.isoformat()}, ts3),
+            make_event("e3", "create_entity", make_entity_data("ent3", "Third", ts4), ts4),
+            make_event("restore2", "restore_to", {"timestamp": ts3.isoformat()}, ts5),
+        ]
+
+        resolved = resolve_restores(events)
+
+        # After resolving nested restores, should have only e1
+        # (the state at T1, which is what the graph looked like at T3 after the first restore)
+        assert len(resolved) == 1
+        assert resolved[0].id == "e1"
+
+    def test_resolve_filters_out_restore_to_markers(self):
+        """restore_to markers should not appear in resolved events."""
+        from mnemograph.state import resolve_restores
+
+        ts1 = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+        events = [
+            make_event("e1", "create_entity", make_entity_data("ent1", "Test", ts1), ts1),
+            make_event("restore1", "restore_to", {"timestamp": ts1.isoformat()}, ts2),
+        ]
+
+        resolved = resolve_restores(events)
+
+        # Should have e1 but NOT the restore_to marker
+        assert len(resolved) == 1
+        assert resolved[0].op == "create_entity"
+        assert all(e.op != "restore_to" for e in resolved)
+
+    def test_malformed_restore_to_filtered_out(self):
+        """Malformed restore_to events (no timestamp) should be filtered."""
+        from mnemograph.state import resolve_restores
+
+        ts1 = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+        events = [
+            make_event("e1", "create_entity", make_entity_data("ent1", "Test", ts1), ts1),
+            make_event("bad_restore", "restore_to", {}, ts2),  # No timestamp
+        ]
+
+        resolved = resolve_restores(events)
+
+        # Should have e1, malformed restore_to filtered out
+        assert len(resolved) == 1
+        assert resolved[0].id == "e1"
+
+    def test_invalid_timestamp_filtered_out(self):
+        """restore_to with invalid timestamp should be filtered."""
+        from mnemograph.state import resolve_restores
+
+        ts1 = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+        events = [
+            make_event("e1", "create_entity", make_entity_data("ent1", "Test", ts1), ts1),
+            make_event("bad_restore", "restore_to", {"timestamp": "invalid-timestamp"}, ts2),
+        ]
+
+        resolved = resolve_restores(events)
+
+        # Should have e1, invalid restore_to filtered out
+        assert len(resolved) == 1
+        assert resolved[0].id == "e1"
+
+    def test_future_timestamp_restore(self):
+        """restore_to with future timestamp should include all events before it."""
+        from mnemograph.state import resolve_restores
+
+        ts1 = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        ts_future = datetime(2099, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+        ts3 = datetime(2025, 1, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+        events = [
+            make_event("e1", "create_entity", make_entity_data("ent1", "First", ts1), ts1),
+            make_event("e2", "create_entity", make_entity_data("ent2", "Second", ts2), ts2),
+            make_event("restore1", "restore_to", {"timestamp": ts_future.isoformat()}, ts3),
+        ]
+
+        resolved = resolve_restores(events)
+
+        # Future restore should include all events before the restore_to
+        # (acts as no-op since T_ref is after all events)
+        assert len(resolved) == 2
+        assert resolved[0].id == "e1"
+        assert resolved[1].id == "e2"
+
+    def test_multiple_sequential_restores(self):
+        """Multiple restore_to events in sequence should be resolved correctly."""
+        from mnemograph.state import resolve_restores
+
+        ts1 = datetime(2025, 1, 10, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2025, 1, 12, 12, 0, 0, tzinfo=timezone.utc)
+        ts3 = datetime(2025, 1, 14, 12, 0, 0, tzinfo=timezone.utc)
+        ts4 = datetime(2025, 1, 16, 12, 0, 0, tzinfo=timezone.utc)
+
+        # Three sequential restores, last one wins
+        events = [
+            make_event("e1", "create_entity", make_entity_data("ent1", "First", ts1), ts1),
+            make_event("restore1", "restore_to", {"timestamp": ts1.isoformat()}, ts2),
+            make_event("restore2", "restore_to", {"timestamp": ts2.isoformat()}, ts3),
+            make_event("restore3", "restore_to", {"timestamp": ts1.isoformat()}, ts4),
+        ]
+
+        resolved = resolve_restores(events)
+
+        # Last restore_to(T1) should win - only e1 should be included
+        assert len(resolved) == 1
+        assert resolved[0].id == "e1"

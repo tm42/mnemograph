@@ -142,30 +142,6 @@ def test_invalid_depth():
             assert "Invalid depth" in str(e)
 
 
-def test_shallow_context_frequently_accessed():
-    """Test shallow context shows frequently accessed entities."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        engine = MemoryEngine(Path(tmpdir), "test-session")
-
-        engine.create_entities([
-            {"name": "Popular", "entityType": "concept", "observations": ["Popular entity"]},
-            {"name": "Other", "entityType": "concept", "observations": ["Regular entity"]},
-        ])
-
-        # Manually increment access count to test the display
-        for entity in engine.state.entities.values():
-            if entity.name == "Popular":
-                entity.access_count = 5
-                break
-
-        result = engine.recall(depth="shallow", format="graph")
-
-        # Should show frequently accessed section
-        assert "Frequently Accessed" in result["content"]
-        assert "Popular" in result["content"]
-        assert "5 accesses" in result["content"]
-
-
 def test_deep_context_no_focus_uses_recent():
     """Test deep context uses recent entities when no focus provided."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -219,7 +195,6 @@ def test_format_entities_many_observations():
         created_at=now,
         updated_at=now,
         created_by="test",
-        access_count=0,
     )
     state.entities["e1"] = entity
 
@@ -254,7 +229,6 @@ def test_format_entities_truncation():
             created_at=now,
             updated_at=now,
             created_by="test",
-            access_count=0,
         )
         state.entities[f"e{i}"] = entity
         entities.append(entity)
@@ -295,9 +269,9 @@ def test_format_with_relations():
 
     # Create two entities with a relation
     e1 = Entity(id="e1", name="Source", type="concept", observations=[],
-                created_at=now, updated_at=now, created_by="test", access_count=0)
+                created_at=now, updated_at=now, created_by="test")
     e2 = Entity(id="e2", name="Target", type="concept", observations=[],
-                created_at=now, updated_at=now, created_by="test", access_count=0)
+                created_at=now, updated_at=now, created_by="test")
     state.entities["e1"] = e1
     state.entities["e2"] = e2
 

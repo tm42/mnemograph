@@ -52,8 +52,6 @@ interface Entity {
   observations: Observation[];
   created_at, updated_at: string;
   created_by: string;      // session ID
-  access_count: number;
-  last_accessed: string;
 }
 ```
 

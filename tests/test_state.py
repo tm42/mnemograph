@@ -29,8 +29,6 @@ def test_materialize_create_entity():
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "created_by": "test",
-                "access_count": 0,
-                "last_accessed": None,
             },
         )
     ]
@@ -57,7 +55,6 @@ def test_materialize_delete_entity():
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "created_by": "test",
-                "access_count": 0,
             },
         ),
         MemoryEvent(
@@ -108,7 +105,7 @@ def test_materialize_cascade_delete():
             session_id="test",
             data={
                 "id": "e1", "name": "A", "type": "entity", "observations": [],
-                "created_at": now, "updated_at": now, "created_by": "test", "access_count": 0,
+                "created_at": now, "updated_at": now, "created_by": "test",
             },
         ),
         MemoryEvent(
@@ -117,7 +114,7 @@ def test_materialize_cascade_delete():
             session_id="test",
             data={
                 "id": "e2", "name": "B", "type": "entity", "observations": [],
-                "created_at": now, "updated_at": now, "created_by": "test", "access_count": 0,
+                "created_at": now, "updated_at": now, "created_by": "test",
             },
         ),
         MemoryEvent(
@@ -153,7 +150,7 @@ def test_materialize_add_observation():
             session_id="test",
             data={
                 "id": "e1", "name": "Test", "type": "entity", "observations": [],
-                "created_at": now, "updated_at": now, "created_by": "test", "access_count": 0,
+                "created_at": now, "updated_at": now, "created_by": "test",
             },
         ),
         MemoryEvent(

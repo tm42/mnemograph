@@ -59,7 +59,7 @@ session_start() → read quick_start guide → recall(depth='shallow')
 - Store decisions as you make them (with rationale!)
 - Note patterns you discover
 - Add observations to existing entities rather than creating duplicates
-- When results are large, recall returns structure-only — use `open_nodes(['entity1', 'entity2'])` to expand
+- When results are large, recall returns structure-only — use `recall(focus=['entity1', 'entity2'])` to expand
 
 **Periodically**:
 - `get_graph_health()` to spot issues
@@ -101,7 +101,7 @@ recall(depth='shallow')
 
 # Search and explore
 recall(depth='medium', query=query)            # semantic search + neighbors
-open_nodes(['entity1', 'entity2'])             # full data for specific entities
+recall(focus=['entity1', 'entity2'])           # full data for specific entities
 
 # Store knowledge
 remember(name, type, observations, relations)  # atomic creation

@@ -192,9 +192,8 @@ Tool descriptions should work well across different LLM backends:
 | Tool | Description |
 |------|-------------|
 | `remember` | Store knowledge atomically (entity + observations + relations) |
-| `recall` | Get context at shallow/medium/deep levels |
+| `recall` | Get context at shallow/medium/deep levels (use focus param for specific entities) |
 | `create_entities` | Create nodes in the knowledge graph |
-| `open_nodes` | Get full data for specific entities |
 | `find_similar` | Check for duplicates before creating |
 | `read_graph` | Return full graph state |
 | `get_state_at` | Time travel: view graph at any timestamp |
@@ -231,8 +230,7 @@ def get_primer() -> dict:
         "recent_activity": get_recent_entities(limit=5),
         "tools": {
             "retrieval": [
-                "recall(depth, query) - Get relevant context at varying depths",
-                "open_nodes(names) - Get full data for specific entities",
+                "recall(depth, query, focus) - Get relevant context at varying depths",
                 "find_similar(name) - Check for duplicates before creating",
             ],
             "creation": [
@@ -405,7 +403,7 @@ uvx mnemograph --help
 #   - recall with depth="shallow"
 #   - remember with name, entity_type, observations
 #   - find_similar with name to check for duplicates
-#   - open_nodes with entity names
+#   - recall with focus=["entity1", "entity2"] to get full data for specific entities
 ```
 
 ### Known Differences Between Clients

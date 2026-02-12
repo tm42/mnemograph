@@ -21,28 +21,6 @@ def test_create_and_search():
         assert results["entities"][0]["name"] == "Python"
 
 
-def test_access_tracking():
-    """Test that search updates access counts."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        engine = MemoryEngine(Path(tmpdir), "test-session")
-
-        engine.create_entities([
-            {"name": "Test Entity", "entityType": "concept", "observations": ["test"]},
-        ])
-
-        # Initial access count is 0
-        entity_id = list(engine.state.entities.keys())[0]
-        assert engine.state.entities[entity_id].access_count == 0
-
-        # Search should increment access count
-        engine.search_graph("test")
-        assert engine.state.entities[entity_id].access_count == 1
-
-        # Search again
-        engine.search_graph("test")
-        assert engine.state.entities[entity_id].access_count == 2
-
-
 def test_get_recent_entities():
     """Test getting recently updated entities."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -57,31 +35,6 @@ def test_get_recent_entities():
         assert len(recent) == 2
         assert recent[0].name == "Third"  # Most recent first
         assert recent[1].name == "Second"
-
-
-def test_get_hot_entities():
-    """Test getting frequently accessed entities."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        engine = MemoryEngine(Path(tmpdir), "test-session")
-
-        engine.create_entities([
-            {"name": "Hot Topic", "entityType": "concept", "observations": ["hot stuff"]},
-            {"name": "Cold Topic", "entityType": "concept", "observations": ["cold stuff"]},
-        ])
-
-        # Access "Hot Topic" multiple times
-        engine.search_graph("hot")
-        engine.search_graph("hot")
-        engine.search_graph("hot")
-
-        # Access "Cold Topic" once
-        engine.search_graph("cold")
-
-        hot = engine.get_hot_entities(limit=2)
-        assert hot[0].name == "Hot Topic"
-        assert hot[0].access_count == 3
-        assert hot[1].name == "Cold Topic"
-        assert hot[1].access_count == 1
 
 
 def test_get_entities_by_type():

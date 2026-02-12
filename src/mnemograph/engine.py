@@ -259,9 +259,6 @@ class MemoryEngine:
             for rel in self.state.relations:
                 if rel.id in cache:
                     rel.co_access_score = cache[rel.id].get("co_access_score", 0.0)
-                    rel.access_count = cache[rel.id].get("access_count", 0)
-                    if "last_accessed" in cache[rel.id]:
-                        rel.last_accessed = datetime.fromisoformat(cache[rel.id]["last_accessed"])
         except (json.JSONDecodeError, ValueError):
             # Corrupted cache, ignore
             pass
@@ -273,11 +270,9 @@ class MemoryEngine:
         """
         cache = {}
         for rel in self.state.relations:
-            if rel.co_access_score > 0 or rel.access_count > 0:
+            if rel.co_access_score > 0:
                 cache[rel.id] = {
                     "co_access_score": rel.co_access_score,
-                    "access_count": rel.access_count,
-                    "last_accessed": rel.last_accessed.isoformat(),
                 }
 
         self._co_access_cache_path.write_text(json.dumps(cache, indent=2))
@@ -348,6 +343,8 @@ class MemoryEngine:
         """Emit an event and update local state incrementally.
 
         Uses apply_event() for O(1) updates instead of full replay.
+        Special case: restore_to triggers full re-materialize since it
+        rewrites history and can't be applied incrementally.
         """
         event = MemoryEvent(
             op=op,  # type: ignore (we know op is valid EventOp)
@@ -356,8 +353,14 @@ class MemoryEngine:
             data=data,
         )
         self.event_store.append(event)
-        # Incremental update - O(1) instead of O(events)
-        apply_event(self.state, event)
+
+        # restore_to requires full re-materialize (can't apply incrementally)
+        if op == "restore_to":
+            self.state = self._load_state()
+        else:
+            # Incremental update - O(1) instead of O(events)
+            apply_event(self.state, event)
+
         return event
 
     # --- Branch auto-include helper ---
@@ -818,9 +821,6 @@ class MemoryEngine:
                 matching_entities.append(entity)
                 matching_entity_ids.add(entity.id)
 
-        # Track access for matched entities
-        self._track_access(list(matching_entity_ids))
-
         # Include relations between matching entities (within active state)
         matching_relations = [
             r for r in active_state.relations
@@ -848,9 +848,6 @@ class MemoryEngine:
             if entity_id and entity_id in active_state.entities:
                 entities.append(active_state.entities[entity_id])
                 entity_ids.add(entity_id)
-
-        # Track access
-        self._track_access(list(entity_ids))
 
         # Include relations involving these entities (within active state)
         relations = [
@@ -887,15 +884,6 @@ class MemoryEngine:
         # Check name index
         return self.state.get_entity_id_by_name(name_or_id)
 
-    def _track_access(self, entity_ids: list[str]) -> None:
-        """Update access counts for retrieved entities (in-memory only, not persisted)."""
-        now = datetime.now(timezone.utc)
-        for entity_id in entity_ids:
-            if entity_id in self.state.entities:
-                entity = self.state.entities[entity_id]
-                entity.access_count += 1
-                entity.last_accessed = now
-
     # --- Phase 2: Richer queries ---
 
     def get_recent_entities(self, limit: int = DEFAULT_QUERY_LIMIT) -> list[Entity]:
@@ -907,18 +895,6 @@ class MemoryEngine:
         return sorted(
             active_state.entities.values(),
             key=lambda e: e.updated_at,
-            reverse=True,
-        )[:limit]
-
-    def get_hot_entities(self, limit: int = DEFAULT_QUERY_LIMIT) -> list[Entity]:
-        """Get most frequently accessed entities.
-
-        Uses branch-filtered state on non-main branches.
-        """
-        active_state = self.get_active_state()
-        return sorted(
-            active_state.entities.values(),
-            key=lambda e: e.access_count,
             reverse=True,
         )[:limit]
 
@@ -947,10 +923,6 @@ class MemoryEngine:
             [r.to_entity for r in outgoing] + [r.from_entity for r in incoming]
         )
         neighbors = [active_state.entities[nid] for nid in neighbor_ids if nid in active_state.entities]
-
-        # Track access
-        accessed = [entity_id] + list(neighbor_ids)
-        self._track_access(accessed)
 
         return {
             "entity": entity.model_dump(mode="json") if include_entity else None,
@@ -996,9 +968,6 @@ class MemoryEngine:
                 entity_dict["_score"] = score  # Attach similarity score
                 entities.append(entity_dict)
                 entity_ids.append(entity_id)
-
-        # Track access
-        self._track_access(entity_ids)
 
         # Include relations between matched entities (within active state)
         entity_id_set = set(entity_ids)
@@ -1311,8 +1280,6 @@ class MemoryEngine:
                 "explicit": relation.explicit_weight,
             },
             "metadata": {
-                "access_count": relation.access_count,
-                "last_accessed": relation.last_accessed.isoformat(),
                 "created_at": relation.created_at.isoformat(),
             },
         }
@@ -1608,8 +1575,8 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
             project_entities = self.get_entities_by_type("project")
 
             if project_entities:
-                # Attach to most recently accessed project
-                project_entities.sort(key=lambda e: e.last_accessed or e.created_at, reverse=True)
+                # Attach to most recently updated project
+                project_entities.sort(key=lambda e: e.updated_at, reverse=True)
                 project = project_entities[0]
 
                 # Add observation with session summary
@@ -1844,7 +1811,6 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
                     "type": entity.type,
                     "observation_count": len(entity.observations),
                     "created_at": entity.created_at.isoformat(),
-                    "last_accessed": entity.last_accessed.isoformat() if entity.last_accessed else None,
                 })
 
         # Sort by creation date (oldest first - most likely to be stale)

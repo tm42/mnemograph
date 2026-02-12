@@ -14,6 +14,22 @@ from mcp.types import TextContent, Tool
 
 from .engine import MemoryEngine
 
+# --- Tools delegated to subagents (hidden from list_tools, but callable) ---
+HIDDEN_TOOLS = {
+    # Agent-internal (memory-store wraps these)
+    "find_similar",
+    "remember",
+    "add_observations",
+    "create_relations",
+    "suggest_relations",
+    "set_relation_importance",
+    # Redundant (memory-store uses remember)
+    "create_entities",
+    "create_entities_force",
+    # Admin read-only
+    "get_relation_weight",
+}
+
 # --- Logging setup ---
 memory_dir = Path(os.environ.get("MEMORY_PATH", ".claude/memory"))
 memory_dir.mkdir(parents=True, exist_ok=True)
@@ -38,13 +54,13 @@ server = Server("mnemograph")
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    """List available MCP tools."""
-    return [
+    """List available MCP tools (excludes tools delegated to subagents)."""
+    all_tools = [
         Tool(
             name="create_entities",
             description=(
                 "Create new entities in the knowledge graph. "
-                "AUTO-BLOCKS if similar entity exists (>85% match) — returns warning with suggestion. "
+                "AUTO-BLOCKS if similar entity exists (>80% match) — returns warning with suggestion. "
                 "Use create_entities_force to override. "
                 "Types: concept, decision, project, pattern, question, learning. "
                 "Naming: use canonical names ('Python' not 'python language'), prefix decisions ('Decision: Use Redis')."
@@ -767,6 +783,9 @@ async def list_tools() -> list[Tool]:
             },
         ),
     ]
+
+    # Filter out tools delegated to subagents
+    return [tool for tool in all_tools if tool.name not in HIDDEN_TOOLS]
 
 
 @server.call_tool()

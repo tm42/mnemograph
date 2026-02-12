@@ -55,13 +55,6 @@ def get_shallow_context(state: GraphState, max_tokens: int = 500) -> ContextResu
         reverse=True,
     )[:5]
 
-    # Most accessed
-    hot = sorted(
-        state.entities.values(),
-        key=lambda e: e.access_count,
-        reverse=True,
-    )[:5]
-
     # Entity type breakdown
     type_counts: dict[str, int] = {}
     for e in state.entities.values():
@@ -83,15 +76,6 @@ def get_shallow_context(state: GraphState, max_tokens: int = 500) -> ContextResu
     for e in recent:
         obs_preview = e.observations[0].text[:50] + "..." if e.observations else ""
         lines.append(f"- **{e.name}** ({e.type}): {obs_preview}")
-
-    if any(e.access_count > 0 for e in hot):
-        lines.extend([
-            "",
-            "### Frequently Accessed",
-        ])
-        for e in hot:
-            if e.access_count > 0:
-                lines.append(f"- **{e.name}**: {e.access_count} accesses")
 
     content = "\n".join(lines)
 

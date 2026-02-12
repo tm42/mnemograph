@@ -162,11 +162,70 @@ class GraphState:
         return errors
 
 
+def resolve_restores(events: list[MemoryEvent]) -> list[MemoryEvent]:
+    """Resolve restore_to events by filtering to the restore point.
+
+    Scans backwards for the last restore_to event. If found:
+    1. Extract T_ref from event.data["timestamp"]
+    2. Filter pre-restore events to those at or before T_ref
+    3. Recursively resolve pre-events (handles nested restores)
+    4. Return resolved_pre + post-restore events
+
+    If no restore_to found, returns events unchanged.
+    Handles nested restores through recursion.
+    """
+    # Scan backwards for last restore_to event
+    restore_index = None
+    for i in range(len(events) - 1, -1, -1):
+        if events[i].op == "restore_to":
+            restore_index = i
+            break
+
+    # No restore_to found - return unchanged
+    if restore_index is None:
+        return events
+
+    restore_event = events[restore_index]
+    t_ref_str = restore_event.data.get("timestamp")
+    if not t_ref_str:
+        # Malformed restore_to event - filter it out and continue
+        filtered = events[:restore_index] + events[restore_index + 1:]
+        return resolve_restores(filtered)
+
+    # Parse reference timestamp
+    from datetime import datetime
+    try:
+        t_ref = datetime.fromisoformat(t_ref_str)
+    except ValueError:
+        # Malformed timestamp - filter out the restore_to and continue
+        filtered = events[:restore_index] + events[restore_index + 1:]
+        return resolve_restores(filtered)
+
+    # Split events around restore point
+    pre = events[:restore_index]
+    post = events[restore_index + 1:]
+
+    # Filter pre-events to those at or before T_ref
+    filtered_pre = [e for e in pre if e.ts <= t_ref]
+
+    # Recursively resolve nested restores in pre-events
+    resolved_pre = resolve_restores(filtered_pre)
+
+    # Return resolved pre + post (excluding the restore_to marker itself)
+    return resolved_pre + post
+
+
 def materialize(events: list[MemoryEvent]) -> GraphState:
-    """Replay events to build current state."""
+    """Replay events to build current state.
+
+    Resolves any restore_to events before replay.
+    """
+    # Resolve restore_to events first
+    resolved_events = resolve_restores(events)
+
     state = GraphState()
 
-    for event in events:
+    for event in resolved_events:
         apply_event(state, event)
 
     # Rebuild indices after full materialization
@@ -302,6 +361,12 @@ def apply_event(state: GraphState, event: MemoryEvent) -> None:
         state._incoming.clear()
         state._connected_entities.clear()
         state._relations_by_id.clear()
+
+    elif op == "restore_to":
+        # restore_to is a marker event handled during resolve_restores().
+        # If encountered during incremental apply, it indicates the engine
+        # needs to do a full re-materialize. For now, this is a no-op.
+        pass
 
     state.last_event_id = event.id
 

@@ -452,7 +452,7 @@ class TestExplicitWeightEvent:
                 data={
                     "id": "e1", "name": "Entity1", "type": "concept",
                     "observations": [], "created_at": now.isoformat(),
-                    "updated_at": now.isoformat(), "created_by": "test", "access_count": 0,
+                    "updated_at": now.isoformat(), "created_by": "test",
                 },
             ),
             MemoryEvent(
@@ -460,7 +460,7 @@ class TestExplicitWeightEvent:
                 data={
                     "id": "e2", "name": "Entity2", "type": "concept",
                     "observations": [], "created_at": now.isoformat(),
-                    "updated_at": now.isoformat(), "created_by": "test", "access_count": 0,
+                    "updated_at": now.isoformat(), "created_by": "test",
                 },
             ),
             # Create relation
@@ -500,7 +500,7 @@ class TestExplicitWeightEvent:
                 data={
                     "id": "e1", "name": "E1", "type": "concept",
                     "observations": [], "created_at": now.isoformat(),
-                    "updated_at": now.isoformat(), "created_by": "test", "access_count": 0,
+                    "updated_at": now.isoformat(), "created_by": "test",
                 },
             ),
             MemoryEvent(
@@ -508,7 +508,7 @@ class TestExplicitWeightEvent:
                 data={
                     "id": "e2", "name": "E2", "type": "concept",
                     "observations": [], "created_at": now.isoformat(),
-                    "updated_at": now.isoformat(), "created_by": "test", "access_count": 0,
+                    "updated_at": now.isoformat(), "created_by": "test",
                 },
             ),
             MemoryEvent(

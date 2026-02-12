@@ -26,7 +26,6 @@ After setup, you should have access to these MCP tools:
 - `mcp__mnemograph__create_entities`
 - `mcp__mnemograph__create_relations`
 - `mcp__mnemograph__add_observations`
-- `mcp__mnemograph__open_nodes`
 - `mcp__mnemograph__find_similar` — check for duplicates before creating
 - `mcp__mnemograph__read_graph`
 - `mcp__mnemograph__delete_entities`

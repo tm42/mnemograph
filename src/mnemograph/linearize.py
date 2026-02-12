@@ -280,18 +280,11 @@ def linearize_shallow_summary(state: GraphState) -> str:
     recent = sorted(state.entities.values(), key=lambda e: e.updated_at, reverse=True)[:5]
     recent_names = [e.name for e in recent]
 
-    # Hot entities (most accessed)
-    hot = sorted(state.entities.values(), key=lambda e: e.access_count, reverse=True)[:3]
-    hot_names = [e.name for e in hot if e.access_count > 0]
-
     lines = [
         f"**Memory:** {entity_count} entities, {relation_count} relations ({type_summary})",
         "",
         f"**Recent:** {', '.join(recent_names)}",
     ]
-
-    if hot_names:
-        lines.append(f"**Frequently accessed:** {', '.join(hot_names)}")
 
     # Extract any gotchas from the graph
     all_gotchas = _extract_gotchas(list(state.entities.values()))
