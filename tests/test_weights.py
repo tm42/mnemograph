@@ -12,6 +12,7 @@ from mnemograph.models import Entity, Observation, Relation
 from mnemograph.state import GraphState, materialize
 from mnemograph.weights import (
     compute_recency_score,
+    compute_co_access_score,
     update_co_access_scores,
     weighted_bfs,
     get_strongest_connections,
@@ -111,13 +112,15 @@ class TestCoAccessScore:
         self.state.relations = [r1, r2, r3]
 
     def test_co_accessed_relations_strengthen(self):
-        """Relations between co-retrieved entities should increase."""
+        """Relations between co-retrieved entities should increase density."""
         # Retrieve e1 and e2 together
         retrieved = {"e1", "e2"}
         updated = update_co_access_scores(self.state, retrieved)
 
         assert "r1" in updated
-        assert self.state.relations[0].co_access_score == pytest.approx(0.1, abs=0.01)
+        assert self.state.relations[0].co_access_density == pytest.approx(1.0, abs=0.01)
+        # Score should be > 0 (sigmoid of density=1.0)
+        assert self.state.relations[0].co_access_score > 0
 
     def test_non_co_accessed_unchanged(self):
         """Relations not involved shouldn't change."""
@@ -126,17 +129,18 @@ class TestCoAccessScore:
         update_co_access_scores(self.state, retrieved)
 
         # r1 connects e1 and e2, but only e1 retrieved
-        assert self.state.relations[0].co_access_score == 0.0
+        assert self.state.relations[0].co_access_density == 0.0
 
-    def test_asymptotic_to_one(self):
-        """Score should never exceed 1.0."""
+    def test_score_bounded_0_to_1(self):
+        """Score should always be between 0 and 1, even with high density."""
         retrieved = {"e1", "e2"}
 
-        # Apply co-access many times
+        # Apply co-access many times to build up density
         for _ in range(100):
             update_co_access_scores(self.state, retrieved)
 
         assert self.state.relations[0].co_access_score <= 1.0
+        assert self.state.relations[0].co_access_score >= 0.0
 
     def test_access_count_increments(self):
         """access_count should track co-access events."""
@@ -184,12 +188,12 @@ class TestCombinedWeight:
             to_entity="e2",
             type="relates_to",
             explicit_weight=1.0,
-            co_access_score=1.0,
+            co_access_density=10.0,  # High density → co_access_score ≈ 1.0
             last_accessed=now,
         )
 
-        # All components at max: 0.4*1.0 + 0.3*1.0 + 0.3*1.0 = 1.0
-        assert r.weight == pytest.approx(1.0, abs=0.02)
+        # All components near max: 0.4*1.0 + 0.3*~1.0 + 0.3*1.0 ≈ 1.0
+        assert r.weight == pytest.approx(1.0, abs=0.03)
 
     def test_all_components_contribute(self):
         """Each component should affect final weight."""
@@ -202,7 +206,7 @@ class TestCombinedWeight:
             to_entity="e2",
             type="relates_to",
             explicit_weight=0.0,
-            co_access_score=0.0,
+            co_access_density=0.0,
             last_accessed=now - timedelta(days=365),  # Very old
         )
         base_weight = r_base.weight
@@ -214,19 +218,19 @@ class TestCombinedWeight:
             to_entity="e2",
             type="relates_to",
             explicit_weight=1.0,
-            co_access_score=0.0,
+            co_access_density=0.0,
             last_accessed=now - timedelta(days=365),
         )
         assert r_explicit.weight > base_weight
 
-        # Increase co_access
+        # Increase co_access (high density → high score)
         r_coaccess = Relation(
             id="r3",
             from_entity="e1",
             to_entity="e2",
             type="relates_to",
             explicit_weight=0.0,
-            co_access_score=1.0,
+            co_access_density=10.0,  # High density → score ≈ 1.0
             last_accessed=now - timedelta(days=365),
         )
         assert r_coaccess.weight > base_weight
@@ -273,22 +277,22 @@ class TestWeightedBFS:
             # A -> B (low weight)
             Relation(
                 id="r_ab", from_entity="A", to_entity="B", type="connects",
-                explicit_weight=0.2, co_access_score=0.0, last_accessed=now,
+                explicit_weight=0.2, co_access_density=0.0, last_accessed=now,
             ),
             # B -> C (low weight)
             Relation(
                 id="r_bc", from_entity="B", to_entity="C", type="connects",
-                explicit_weight=0.2, co_access_score=0.0, last_accessed=now,
+                explicit_weight=0.2, co_access_density=0.0, last_accessed=now,
             ),
             # A -> D (high weight)
             Relation(
                 id="r_ad", from_entity="A", to_entity="D", type="connects",
-                explicit_weight=0.9, co_access_score=0.5, last_accessed=now,
+                explicit_weight=0.9, co_access_density=5.0, last_accessed=now,
             ),
             # D -> E (high weight)
             Relation(
                 id="r_de", from_entity="D", to_entity="E", type="connects",
-                explicit_weight=0.9, co_access_score=0.5, last_accessed=now,
+                explicit_weight=0.9, co_access_density=5.0, last_accessed=now,
             ),
         ]
 
@@ -373,19 +377,19 @@ class TestGetStrongestConnections:
         self.state.relations = [
             Relation(
                 id="r1", from_entity="center", to_entity="strong1", type="connects",
-                explicit_weight=0.9, co_access_score=0.8, last_accessed=now,
+                explicit_weight=0.9, co_access_density=7.0, last_accessed=now,
             ),
             Relation(
                 id="r2", from_entity="center", to_entity="strong2", type="connects",
-                explicit_weight=0.8, co_access_score=0.7, last_accessed=now,
+                explicit_weight=0.8, co_access_density=6.0, last_accessed=now,
             ),
             Relation(
                 id="r3", from_entity="center", to_entity="weak1", type="connects",
-                explicit_weight=0.1, co_access_score=0.0, last_accessed=now - timedelta(days=60),
+                explicit_weight=0.1, co_access_density=0.0, last_accessed=now - timedelta(days=60),
             ),
             Relation(
                 id="r4", from_entity="weak2", to_entity="center", type="connects",  # Incoming
-                explicit_weight=0.2, co_access_score=0.1, last_accessed=now - timedelta(days=30),
+                explicit_weight=0.2, co_access_density=1.0, last_accessed=now - timedelta(days=30),
             ),
         ]
 
@@ -542,3 +546,235 @@ class TestExplicitWeightEvent:
 
         # Should have final value
         assert state.relations[0].explicit_weight == 0.3
+
+
+# --- D7: Default Weight Tests ---
+
+
+class TestDefaultWeight:
+    """Tests for D7: Relation with default explicit_weight=0.3 should have low
+    combined weight when recency=0 and co_access=0."""
+
+    def test_default_weight_low_when_stale(self):
+        """New relation with no usage should have low weight when very old."""
+        now = datetime.now(timezone.utc)
+        r = Relation(
+            id="r1",
+            from_entity="e1",
+            to_entity="e2",
+            type="relates_to",
+            explicit_weight=0.3,  # default
+            co_access_density=0.0,  # density=0 → co_access_score ≈ 0.018
+            last_accessed=now - timedelta(days=365),  # very old → recency ≈ 0
+        )
+        # weight = 0.4 * ~0 + 0.3 * ~0.018 + 0.3 * 0.3 ≈ 0.095
+        assert r.weight < 0.15, (
+            f"Stale relation with default weight should be < 0.15, got {r.weight}"
+        )
+
+    def test_default_explicit_weight_is_0_3(self):
+        """Verify the default explicit_weight is 0.3 (D7 change from 0.5)."""
+        r = Relation(
+            id="r1",
+            from_entity="e1",
+            to_entity="e2",
+            type="relates_to",
+        )
+        assert r.explicit_weight == 0.3
+
+
+# --- D6: Leaky Integrator / Sigmoid Tests ---
+
+
+class TestComputeCoAccessScore:
+    """Tests for compute_co_access_score() sigmoid function."""
+
+    def test_sigmoid_zero_density_near_zero(self):
+        """density=0 should produce score near 0 (below midpoint)."""
+        score = compute_co_access_score(0.0)
+        assert score < 0.05, f"sigmoid(0) should be near 0, got {score}"
+
+    def test_sigmoid_midpoint_is_half(self):
+        """density=midpoint (5.0) should produce score ≈ 0.5."""
+        from mnemograph.constants import CO_ACCESS_SIGMOID_MIDPOINT
+        score = compute_co_access_score(CO_ACCESS_SIGMOID_MIDPOINT)
+        assert score == pytest.approx(0.5, abs=0.01), (
+            f"sigmoid(midpoint) should be 0.5, got {score}"
+        )
+
+    def test_sigmoid_high_density_near_one(self):
+        """density=10 should produce score near 1.0 (above midpoint)."""
+        score = compute_co_access_score(10.0)
+        assert score > 0.95, f"sigmoid(10) should be near 1.0, got {score}"
+
+    def test_sigmoid_monotonically_increasing(self):
+        """Higher density should always produce higher score."""
+        scores = [compute_co_access_score(d) for d in [0, 1, 2, 5, 8, 10, 20]]
+        for i in range(len(scores) - 1):
+            assert scores[i] < scores[i + 1], (
+                f"Score should increase: {scores[i]} < {scores[i+1]} at densities"
+            )
+
+
+class TestLeakyIntegrator:
+    """Tests for the leaky integrator decay + pulse model in update_co_access_scores."""
+
+    def setup_method(self):
+        """Create test state with two entities and a relation."""
+        self.state = GraphState()
+
+        e1 = Entity(id="e1", name="Alpha", type="concept")
+        e2 = Entity(id="e2", name="Beta", type="concept")
+        self.state.entities = {"e1": e1, "e2": e2}
+
+        r1 = Relation(id="r1", from_entity="e1", to_entity="e2", type="relates_to")
+        self.state.relations = [r1]
+
+    def test_density_increases_with_co_access(self):
+        """Co-access should increase density by the increment."""
+        update_co_access_scores(self.state, {"e1", "e2"})
+        assert self.state.relations[0].co_access_density == pytest.approx(1.0, abs=0.01)
+
+    def test_density_accumulates(self):
+        """Multiple rapid co-accesses should accumulate density."""
+        update_co_access_scores(self.state, {"e1", "e2"})
+        update_co_access_scores(self.state, {"e1", "e2"})
+        # Two quick pulses → density ≈ 2.0 (minimal decay between)
+        assert self.state.relations[0].co_access_density > 1.5
+
+    def test_density_decays_over_time(self):
+        """Density should decay when time passes between co-accesses."""
+        # First co-access
+        update_co_access_scores(self.state, {"e1", "e2"})
+        density_after_first = self.state.relations[0].co_access_density
+
+        # Simulate 30 days passing by backdating last_co_access
+        self.state.relations[0].last_co_access = (
+            datetime.now(timezone.utc) - timedelta(days=30)
+        )
+
+        # Second co-access — old density decays to ~0.5, then +1.0 pulse
+        update_co_access_scores(self.state, {"e1", "e2"})
+        density_after_second = self.state.relations[0].co_access_density
+
+        # Should be roughly 0.5 * density_after_first + 1.0 ≈ 1.5
+        assert density_after_second == pytest.approx(
+            density_after_first * 0.5 + 1.0, abs=0.1
+        )
+
+    def test_last_co_access_tracked(self):
+        """last_co_access should be set after update."""
+        assert self.state.relations[0].last_co_access is None
+        update_co_access_scores(self.state, {"e1", "e2"})
+        assert self.state.relations[0].last_co_access is not None
+
+    def test_combined_weight_with_leaky_integrator(self):
+        """Relation.weight should produce sensible values with new co-access model."""
+        now = datetime.now(timezone.utc)
+
+        # Fresh relation with some co-access density
+        r = Relation(
+            id="r1",
+            from_entity="e1",
+            to_entity="e2",
+            type="relates_to",
+            explicit_weight=0.5,
+            co_access_density=5.0,  # midpoint → score ≈ 0.5
+            last_accessed=now,
+        )
+
+        # weight = 0.4 * 1.0 + 0.3 * 0.5 + 0.3 * 0.5 = 0.4 + 0.15 + 0.15 = 0.7
+        assert r.weight == pytest.approx(0.7, abs=0.05)
+
+        # Zero density, fresh access, default explicit
+        r_zero = Relation(
+            id="r2",
+            from_entity="e1",
+            to_entity="e2",
+            type="relates_to",
+            co_access_density=0.0,
+            last_accessed=now,
+        )
+        # co_access_score(0) ≈ 0.018, recency=1.0, explicit=0.3
+        # weight ≈ 0.4 * 1.0 + 0.3 * 0.018 + 0.3 * 0.3 ≈ 0.495
+        assert 0.3 < r_zero.weight < 0.6
+
+
+class TestCacheMigration:
+    """Tests for old-format cache migration in _load_co_access_cache."""
+
+    def test_old_format_cache_migrated(self):
+        """Old-format cache (co_access_score) should be migrated to density."""
+        import tempfile
+        import json
+        from pathlib import Path
+        from mnemograph.engine import MemoryEngine
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test-session")
+
+            # Create entities + relation
+            engine.create_entities_force([
+                {"name": "Alpha", "entityType": "concept"},
+                {"name": "Beta", "entityType": "concept"},
+            ])
+            engine.create_relations([
+                {"from": "Alpha", "to": "Beta", "relationType": "links_to"},
+            ])
+
+            rel_id = engine.state.relations[0].id
+
+            # Write old-format cache
+            old_cache = {rel_id: {"co_access_score": 0.5}}
+            cache_path = Path(tmpdir) / "co_access_cache.json"
+            cache_path.write_text(json.dumps(old_cache))
+
+            # Reload engine to trigger cache loading
+            engine2 = MemoryEngine(Path(tmpdir), "test-session")
+
+            # Find the relation
+            rel = next(r for r in engine2.state.relations if r.id == rel_id)
+
+            # Density should be set (inverse sigmoid of 0.5 = midpoint = 5.0)
+            assert rel.co_access_density > 0, (
+                "Old cache format should be migrated to density"
+            )
+            # Score 0.5 → density ≈ midpoint (5.0)
+            assert rel.co_access_density == pytest.approx(5.0, abs=0.5)
+
+    def test_new_format_cache_loaded(self):
+        """New-format cache (co_access_density) should be loaded directly."""
+        import tempfile
+        import json
+        from pathlib import Path
+        from mnemograph.engine import MemoryEngine
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test-session")
+
+            engine.create_entities_force([
+                {"name": "Alpha", "entityType": "concept"},
+                {"name": "Beta", "entityType": "concept"},
+            ])
+            engine.create_relations([
+                {"from": "Alpha", "to": "Beta", "relationType": "links_to"},
+            ])
+
+            rel_id = engine.state.relations[0].id
+
+            # Write new-format cache
+            new_cache = {
+                rel_id: {
+                    "co_access_density": 3.7,
+                    "last_co_access": "2026-01-15T12:00:00+00:00",
+                }
+            }
+            cache_path = Path(tmpdir) / "co_access_cache.json"
+            cache_path.write_text(json.dumps(new_cache))
+
+            # Reload
+            engine2 = MemoryEngine(Path(tmpdir), "test-session")
+            rel = next(r for r in engine2.state.relations if r.id == rel_id)
+
+            assert rel.co_access_density == pytest.approx(3.7, abs=0.01)
+            assert rel.last_co_access is not None

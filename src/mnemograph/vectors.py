@@ -298,11 +298,68 @@ class VectorIndex:
         conn.commit()
 
     def reindex_all(self, entities: list[Entity]) -> int:
-        """Reindex all entities. Returns count of indexed."""
-        indexed = 0
+        """Reindex all entities with batch encoding. Returns count of indexed."""
+        # Ensure connection, model, and tables
+        conn = self.conn
+        if conn is None:
+            return 0
+
+        model = self.model
+        if model is None:
+            return 0
+
+        if not self._ensure_tables():
+            return 0
+
+        import sqlite_vec
+
+        # First pass: check which entities need reindexing (skip-unchanged logic)
+        to_encode = []  # List of (entity_id, text, text_hash, entity)
+
         for entity in entities:
-            if self.index_entity(entity):
-                indexed += 1
+            text = self._entity_to_text(entity)
+            text_hash = _stable_hash(text)
+
+            # Check if already indexed with same content
+            existing = conn.execute(
+                "SELECT text_hash FROM entity_meta WHERE entity_id = ?", (entity.id,)
+            ).fetchone()
+
+            if existing and existing[0] == text_hash:
+                continue  # Already indexed, no change
+
+            to_encode.append((entity.id, text, text_hash, entity))
+
+        if not to_encode:
+            return 0
+
+        # Batch encode all texts
+        texts = [item[1] for item in to_encode]
+        embeddings = model.encode(texts, batch_size=32)
+
+        # Batch upsert
+        indexed = 0
+        for i, (entity_id, text, text_hash, entity) in enumerate(to_encode):
+            embedding = embeddings[i].tolist()
+
+            # Upsert vector
+            conn.execute("DELETE FROM entity_vectors WHERE entity_id = ?", (entity_id,))
+            conn.execute(
+                "INSERT INTO entity_vectors (entity_id, embedding) VALUES (?, ?)",
+                (entity_id, sqlite_vec.serialize_float32(embedding)),
+            )
+
+            # Upsert metadata
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO entity_meta (entity_id, name, type, text_hash)
+                VALUES (?, ?, ?, ?)
+            """,
+                (entity_id, entity.name, entity.type, text_hash),
+            )
+            indexed += 1
+
+        conn.commit()
         return indexed
 
     def invalidate(self) -> None:
@@ -399,8 +456,8 @@ class VectorIndex:
                 (serialized, limit),
             ).fetchall()
 
-        # Convert distance to similarity (1 / (1 + distance))
-        return [(r[0], 1.0 / (1.0 + r[1])) for r in results]
+        # Convert distance to similarity (1 - (distance² / 2)), clamped to [0, 1]
+        return [(r[0], max(0.0, 1.0 - (r[1] ** 2) / 2.0)) for r in results]
 
     def text_similarity(self, text1: str, text2: str) -> float:
         """Compute cosine similarity between two text strings.

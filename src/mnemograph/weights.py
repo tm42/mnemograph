@@ -52,32 +52,62 @@ def compute_recency_score(
     return max(0.0, min(1.0, score))
 
 
+def compute_co_access_score(density: float) -> float:
+    """Compute co-access score from density via sigmoid.
+
+    Maps unbounded density accumulator to [0, 1] range using a
+    logistic sigmoid: 1 / (1 + e^(-k*(density - midpoint)))
+
+    Args:
+        density: Accumulated co-access density (>= 0)
+
+    Returns:
+        Score between 0.0 and 1.0
+    """
+    from .constants import CO_ACCESS_SIGMOID_MIDPOINT, CO_ACCESS_SIGMOID_STEEPNESS
+
+    return 1.0 / (1.0 + math.exp(
+        -CO_ACCESS_SIGMOID_STEEPNESS * (density - CO_ACCESS_SIGMOID_MIDPOINT)
+    ))
+
+
 def update_co_access_scores(
     state: GraphState,
     retrieved_entity_ids: set[str],
-    increment: float = 0.1,
+    increment: float = 1.0,
 ) -> list[str]:
     """Strengthen relations where both entities were retrieved together.
 
     Call this after each retrieval operation to learn from usage patterns.
-    Uses diminishing returns (asymptotic to 1.0).
+    Uses a leaky integrator model: existing density decays exponentially,
+    then a pulse is added for each co-access event.
 
     Args:
         state: Current graph state (modified in place)
         retrieved_entity_ids: Set of entity IDs returned in this retrieval
-        increment: Amount to increase co_access_score (default: 0.1)
+        increment: Pulse amount to add to density (default: 1.0)
 
     Returns:
         List of relation IDs that were updated
     """
+    from .constants import CO_ACCESS_HALF_LIFE_DAYS, LN_2, SECONDS_PER_DAY
+
     updated = []
     now = datetime.now(timezone.utc)
+    decay_rate = LN_2 / CO_ACCESS_HALF_LIFE_DAYS
 
     for rel in state.relations:
         if (rel.from_entity in retrieved_entity_ids and
             rel.to_entity in retrieved_entity_ids):
-            # Increment with diminishing returns (asymptotic to 1.0)
-            rel.co_access_score = min(1.0, rel.co_access_score + increment)
+            # Decay existing density based on time since last co-access
+            if rel.last_co_access is not None:
+                dt_days = (now - rel.last_co_access).total_seconds() / SECONDS_PER_DAY
+                if dt_days > 0:
+                    rel.co_access_density *= math.exp(-decay_rate * dt_days)
+
+            # Pulse: add increment to density
+            rel.co_access_density += increment
+            rel.last_co_access = now
             rel.access_count += 1
             rel.last_accessed = now
             updated.append(rel.id)

@@ -79,8 +79,9 @@ class Relation(BaseModel):
     created_by: str = ""  # session ID
 
     # Weight components
-    explicit_weight: float = Field(default=0.5, ge=0.0, le=1.0)  # User/CC set
-    co_access_score: float = Field(default=0.0, ge=0.0, le=1.0)  # Learned from usage
+    explicit_weight: float = Field(default=0.3, ge=0.0, le=1.0)  # User/CC set
+    co_access_density: float = Field(default=0.0, ge=0.0)  # Leaky integrator accumulator
+    last_co_access: datetime | None = None  # Last time co-access pulse was applied
     access_count: int = 0  # Times this relation was traversed
     last_accessed: datetime = Field(default_factory=utc_now)
 
@@ -93,6 +94,16 @@ class Relation(BaseModel):
         from .weights import compute_recency_score
 
         return compute_recency_score(self.last_accessed)
+
+    @property
+    def co_access_score(self) -> float:
+        """Compute co-access score from density via sigmoid.
+
+        Maps unbounded density accumulator to [0, 1] range.
+        """
+        from .weights import compute_co_access_score
+
+        return compute_co_access_score(self.co_access_density)
 
     @property
     def weight(self) -> float:

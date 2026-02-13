@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 import traceback
 from pathlib import Path
@@ -562,9 +563,18 @@ async def list_tools() -> list[Tool]:
             name="get_graph_health",
             description=(
                 "Assess knowledge graph quality. Returns: orphan count, potential duplicates, overloaded entities, weak relations. "
-                "Run periodically to maintain graph hygiene."
+                "Run periodically to maintain graph hygiene. Use full=true for deep duplicate detection (slower)."
             ),
-            inputSchema={"type": "object", "properties": {}},
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "full": {
+                        "type": "boolean",
+                        "description": "If true, include expensive duplicate detection. Default false for fast checks.",
+                        "default": False,
+                    }
+                },
+            },
         ),
         Tool(
             name="suggest_relations",
@@ -943,7 +953,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "get_graph_health":
-            result = engine.get_graph_health()
+            result = engine.get_graph_health(full=arguments.get("full", False))
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "suggest_relations":
@@ -1104,20 +1114,57 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {e}")]
 
 
+_shutdown_called = False
+
+
+def _shutdown_cleanup():
+    """Perform cleanup on server shutdown.
+
+    Saves co-access cache to persist learned scores.
+    Idempotent - safe to call multiple times.
+    """
+    global _shutdown_called
+    if _shutdown_called:
+        return
+    _shutdown_called = True
+
+    try:
+        logger.info("Shutdown cleanup: saving co-access cache")
+        engine.save_co_access_cache()
+        logger.info("Shutdown cleanup complete")
+    except Exception as e:
+        logger.error(f"Shutdown cleanup failed: {e}")
+
+
 def main():
     """Entry point for the MCP server."""
     logger.info(f"Mnemograph MCP Server starting (memory_dir={memory_dir}, session={session_id})")
     logger.info(f"Loaded {len(engine.state.entities)} entities, {len(engine.state.relations)} relations")
     try:
         asyncio.run(_run_server())
+    except KeyboardInterrupt:
+        logger.info("Received KeyboardInterrupt, shutting down")
     except Exception as e:
         logger.error(f"Server crashed: {e}")
         logger.error(traceback.format_exc())
         raise
+    finally:
+        _shutdown_cleanup()
 
 
 async def _run_server():
-    """Run the MCP server."""
+    """Run the MCP server with signal handlers for graceful shutdown."""
+    loop = asyncio.get_running_loop()
+
+    # Register signal handlers for graceful shutdown
+    def signal_handler(signum):
+        logger.info(f"Received signal {signum}, initiating shutdown")
+        _shutdown_cleanup()
+        loop.stop()
+
+    loop.add_signal_handler(signal.SIGTERM, lambda: signal_handler(signal.SIGTERM))
+    loop.add_signal_handler(signal.SIGINT, lambda: signal_handler(signal.SIGINT))
+
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 

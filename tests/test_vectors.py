@@ -305,3 +305,61 @@ def test_graphstate_index_consistency_after_apply_event():
 
     errors = state.check_index_consistency()
     assert errors == [], f"Index consistency errors after delete entity: {errors}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D11: Similarity Score Tests — cosine-based formula yields ~1.0 for identical
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_text_similarity_identical(engine_with_data):
+    """Identical text should produce similarity very close to 1.0."""
+    vi = engine_with_data.vector_index
+    score = vi.text_similarity(
+        "Python is a programming language",
+        "Python is a programming language",
+    )
+    assert score >= 0.99, f"Identical text similarity should be ~1.0, got {score}"
+
+
+def test_text_similarity_dissimilar(engine_with_data):
+    """Semantically unrelated texts should produce low similarity."""
+    vi = engine_with_data.vector_index
+    score = vi.text_similarity(
+        "quantum physics and black holes",
+        "chocolate cake baking recipe",
+    )
+    assert score < 0.5, f"Dissimilar text similarity should be low, got {score}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D8: reindex_all batch encoding — 5+ entities all searchable afterward
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_reindex_all_batch(engine_with_data):
+    """reindex_all with 5+ entities should make all searchable."""
+    engine = engine_with_data
+
+    # Add more entities to ensure 5+
+    engine.create_entities([
+        {"name": "GraphQL API", "entityType": "concept",
+         "observations": ["Query language for APIs"]},
+        {"name": "REST Architecture", "entityType": "concept",
+         "observations": ["Representational state transfer"]},
+    ])
+
+    # Force reindex all entities
+    all_entities = list(engine.state.entities.values())
+    assert len(all_entities) >= 5, f"Need at least 5 entities, got {len(all_entities)}"
+
+    count = engine.vector_index.reindex_all(all_entities)
+    # Some may already be indexed, but all should be searchable now
+
+    # Verify each entity is searchable
+    for entity in all_entities:
+        results = engine.search_semantic(entity.name)
+        found_names = [e["name"] for e in results["entities"]]
+        assert entity.name in found_names, (
+            f"Entity '{entity.name}' not found after reindex_all"
+        )

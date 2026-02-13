@@ -236,8 +236,8 @@ def test_format_entities_truncation():
     # Request with very small token budget
     result = _format_entities_with_relations(state, entities, {f"e{i}" for i in range(20)}, 100)
 
-    # Should be truncated
-    assert "truncated" in result.lower()
+    # Should be truncated with entity-level footer
+    assert "more entities" in result.lower()
 
 
 def test_medium_context_no_focus_no_query():
@@ -284,3 +284,130 @@ def test_format_with_relations():
     # Should show relation arrows
     assert "→" in result or "←" in result
     assert "links_to" in result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D9: ContextResult.entity_ids populated after medium/deep context
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_medium_context_populates_entity_ids():
+    """Medium context should populate entity_ids in ContextResult."""
+    from mnemograph.retrieval import get_medium_context
+    from mnemograph.state import GraphState
+    from mnemograph.models import Entity, Relation
+    from datetime import datetime, timezone
+
+    state = GraphState()
+    now = datetime.now(timezone.utc)
+
+    e1 = Entity(id="e1", name="Alpha", type="concept", observations=[],
+                created_at=now, updated_at=now, created_by="test")
+    e2 = Entity(id="e2", name="Beta", type="concept", observations=[],
+                created_at=now, updated_at=now, created_by="test")
+    state.entities["e1"] = e1
+    state.entities["e2"] = e2
+
+    rel = Relation(id="r1", from_entity="e1", to_entity="e2", type="links_to",
+                   created_at=now, created_by="test")
+    state.relations.append(rel)
+    state._rebuild_indices()
+
+    result = get_medium_context(state, focus=["Alpha"])
+
+    assert result.entity_ids, "entity_ids should not be empty"
+    assert "e1" in result.entity_ids, "Focus entity should be in entity_ids"
+
+
+def test_deep_context_populates_entity_ids():
+    """Deep context should populate entity_ids in ContextResult."""
+    from mnemograph.retrieval import get_deep_context
+    from mnemograph.state import GraphState
+    from mnemograph.models import Entity, Relation
+    from datetime import datetime, timezone
+
+    state = GraphState()
+    now = datetime.now(timezone.utc)
+
+    e1 = Entity(id="e1", name="Alpha", type="concept", observations=[],
+                created_at=now, updated_at=now, created_by="test")
+    e2 = Entity(id="e2", name="Beta", type="concept", observations=[],
+                created_at=now, updated_at=now, created_by="test")
+    e3 = Entity(id="e3", name="Gamma", type="concept", observations=[],
+                created_at=now, updated_at=now, created_by="test")
+    state.entities["e1"] = e1
+    state.entities["e2"] = e2
+    state.entities["e3"] = e3
+
+    state.relations.append(
+        Relation(id="r1", from_entity="e1", to_entity="e2", type="links_to",
+                 created_at=now, created_by="test"))
+    state.relations.append(
+        Relation(id="r2", from_entity="e2", to_entity="e3", type="links_to",
+                 created_at=now, created_by="test"))
+    state._rebuild_indices()
+
+    result = get_deep_context(state, focus=["Alpha"])
+
+    assert result.entity_ids, "entity_ids should not be empty"
+    assert "e1" in result.entity_ids
+    assert len(result.entity_ids) >= 2, "Deep context should traverse neighbors"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D10: Token budget — complete entities only, footer with remaining count
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_token_budget_complete_entities_only():
+    """50 entities + tiny token budget → complete entities only, footer with count."""
+    from mnemograph.retrieval import _format_entities_with_relations
+    from mnemograph.state import GraphState
+    from mnemograph.models import Entity, Observation
+    from datetime import datetime, timezone
+
+    state = GraphState()
+    now = datetime.now(timezone.utc)
+
+    # Create 50 entities with observations
+    entities = []
+    for i in range(50):
+        observations = [
+            Observation(id=f"o{i}", text=f"Observation text for entity number {i} " * 5,
+                        ts=now, source="test")
+        ]
+        entity = Entity(
+            id=f"e{i}",
+            name=f"Entity{i}",
+            type="concept",
+            observations=observations,
+            created_at=now,
+            updated_at=now,
+            created_by="test",
+        )
+        state.entities[f"e{i}"] = entity
+        entities.append(entity)
+
+    # Very small token budget
+    result = _format_entities_with_relations(
+        state, entities, {f"e{i}" for i in range(50)}, max_tokens=100
+    )
+
+    # Should have footer with remaining count
+    assert "more entities" in result
+
+    # Every included entity should be complete (has ### header and observations)
+    # The first entity should always be complete
+    assert "### Entity0" in result
+
+    # Parse the remaining count from footer
+    import re
+    match = re.search(r"(\d+) more entities", result)
+    assert match, "Footer should contain remaining entity count"
+    remaining = int(match.group(1))
+    # Total should add up: included + remaining = 50
+    # Count included entities by counting ### headers
+    included = result.count("### ")
+    assert included + remaining == 50, (
+        f"Included ({included}) + remaining ({remaining}) should equal 50"
+    )

@@ -8,7 +8,7 @@ Three depth levels:
 Uses edge weights to prioritize stronger connections during traversal.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .models import Entity
 from .state import GraphState
@@ -23,6 +23,7 @@ class ContextResult:
     content: str
     entity_count: int
     relation_count: int
+    entity_ids: set[str] = field(default_factory=set)
 
 
 def estimate_tokens(text: str) -> int:
@@ -46,6 +47,7 @@ def get_shallow_context(state: GraphState, max_tokens: int = 500) -> ContextResu
             content=content,
             entity_count=0,
             relation_count=0,
+            entity_ids=set(),
         )
 
     # Recent entities (by updated_at)
@@ -90,6 +92,7 @@ def get_shallow_context(state: GraphState, max_tokens: int = 500) -> ContextResu
         content=content,
         entity_count=min(10, entity_count),
         relation_count=0,
+        entity_ids={e.id for e in recent},
     )
 
 
@@ -150,6 +153,7 @@ def get_medium_context(
         entity_count=len(entities),
         relation_count=len([r for r in state.relations
                           if r.from_entity in seen_ids or r.to_entity in seen_ids]),
+        entity_ids=seen_ids,
     )
 
 
@@ -212,6 +216,7 @@ def get_deep_context(
         entity_count=len(entities),
         relation_count=len([r for r in state.relations
                           if r.from_entity in seen_ids and r.to_entity in seen_ids]),
+        entity_ids=seen_ids,
     )
 
 
@@ -223,6 +228,41 @@ def _find_entity_by_name(state: GraphState, name: str) -> Entity | None:
     return None
 
 
+def _format_single_entity(
+    state: GraphState,
+    entity: Entity,
+    entity_ids: set[str],
+    verbose: bool = False,
+) -> str:
+    """Format a single entity with its observations and relations."""
+    lines: list[str] = []
+
+    lines.append(f"### {entity.name} ({entity.type})")
+
+    # Observations
+    obs_limit = 5 if verbose else 3
+    for obs in entity.observations[:obs_limit]:
+        text = obs.text if verbose else obs.text[:100]
+        lines.append(f"  - {text}")
+    if len(entity.observations) > obs_limit:
+        lines.append(f"  - ... and {len(entity.observations) - obs_limit} more observations")
+
+    # Relations (only within the entity set)
+    for r in state.relations:
+        if r.from_entity == entity.id and r.to_entity in entity_ids:
+            target = state.entities.get(r.to_entity)
+            if target:
+                lines.append(f"  → {r.type} → **{target.name}**")
+        elif r.to_entity == entity.id and r.from_entity in entity_ids:
+            source = state.entities.get(r.from_entity)
+            if source:
+                lines.append(f"  ← {r.type} ← **{source.name}**")
+
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 def _format_entities_with_relations(
     state: GraphState,
     entities: list[Entity],
@@ -230,42 +270,33 @@ def _format_entities_with_relations(
     max_tokens: int,
     verbose: bool = False,
 ) -> str:
-    """Format entities with their relations."""
+    """Format entities with their relations.
+
+    Formats entities one at a time, tracking cumulative tokens.
+    Stops when next entity would exceed budget.
+    Every included entity is complete—no split observations.
+    """
     if not entities:
         return "No matching entities found."
 
-    lines: list[str] = []
+    formatted_entities: list[str] = []
+    cumulative_tokens = 0
 
-    for entity in entities:
-        lines.append(f"### {entity.name} ({entity.type})")
+    for i, entity in enumerate(entities):
+        # Format this entity
+        entity_text = _format_single_entity(state, entity, entity_ids, verbose)
+        entity_tokens = estimate_tokens(entity_text)
 
-        # Observations
-        obs_limit = 5 if verbose else 3
-        for obs in entity.observations[:obs_limit]:
-            text = obs.text if verbose else obs.text[:100]
-            lines.append(f"  - {text}")
-        if len(entity.observations) > obs_limit:
-            lines.append(f"  - ... and {len(entity.observations) - obs_limit} more observations")
+        # Check if adding this entity would exceed budget
+        if cumulative_tokens + entity_tokens > max_tokens and i > 0:
+            # Stop here, add footer
+            remaining = len(entities) - i
+            footer = f"... and {remaining} more entities"
+            formatted_entities.append(footer)
+            break
 
-        # Relations (only within the entity set)
-        for r in state.relations:
-            if r.from_entity == entity.id and r.to_entity in entity_ids:
-                target = state.entities.get(r.to_entity)
-                if target:
-                    lines.append(f"  → {r.type} → **{target.name}**")
-            elif r.to_entity == entity.id and r.from_entity in entity_ids:
-                source = state.entities.get(r.from_entity)
-                if source:
-                    lines.append(f"  ← {r.type} ← **{source.name}**")
+        # Add this entity
+        formatted_entities.append(entity_text)
+        cumulative_tokens += entity_tokens
 
-        lines.append("")
-
-    content = "\n".join(lines)
-
-    # Truncate if over budget
-    while estimate_tokens(content) > max_tokens and len(lines) > 10:
-        # Remove from the end, keeping structure
-        lines = lines[:-5]
-        content = "\n".join(lines) + "\n\n... (truncated)"
-
-    return content
+    return "\n".join(formatted_entities)

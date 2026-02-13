@@ -373,7 +373,12 @@ def test_get_graph_health_detects_issues():
             {"name": "Test Entity v2", "entityType": "concept"},  # High overlap
         ])
 
-        result = engine.get_graph_health()
+        # Test fast mode (default) - should skip duplicate detection
+        result_fast = engine.get_graph_health()
+        assert result_fast["summary"]["duplicate_groups"] == 0
+
+        # Test full mode - should detect duplicates
+        result = engine.get_graph_health(full=True)
 
         assert result["summary"]["total_entities"] == 3
         # All are orphans since no relations
@@ -819,3 +824,189 @@ def test_remember_full_workflow():
         decision_id = result["entity"]["id"]
         neighbors = engine.get_entity_neighbors(decision_id)
         assert len(neighbors["neighbors"]) == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D14: get_graph_health(full=) Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_get_graph_health_no_duplicates_when_not_full():
+    """get_graph_health(full=False) should not run duplicate detection."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create entities (including potential duplicates)
+        engine.create_entities_force([
+            {"name": "React", "entityType": "concept"},
+            {"name": "ReactJS", "entityType": "concept"},
+        ])
+
+        result = engine.get_graph_health(full=False)
+
+        assert result["summary"]["duplicate_groups"] == 0
+        assert result["issues"]["potential_duplicates"] == []
+
+
+def test_get_graph_health_full_finds_duplicates():
+    """get_graph_health(full=True) with known duplicates should find them."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create known duplicates using force to bypass auto-check
+        engine.create_entities_force([
+            {"name": "Test Entity", "entityType": "concept"},
+            {"name": "Test Entity v2", "entityType": "concept"},
+        ])
+
+        result = engine.get_graph_health(full=True)
+
+        assert result["summary"]["duplicate_groups"] >= 1
+        assert len(result["issues"]["potential_duplicates"]) >= 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D15: Duplicate detection with near-duplicates among 20+ entities
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_find_duplicate_groups_with_near_duplicates():
+    """20+ entities with 3 near-duplicates → duplicate detection finds them."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Use fully distinct names to avoid auto-duplicate-blocking
+        distinct_names = [
+            "PostgreSQL Database", "Redis Cache", "Nginx Proxy",
+            "Docker Container", "Kubernetes Cluster", "Terraform Config",
+            "GraphQL API Gateway", "REST Endpoint", "WebSocket Handler",
+            "OAuth Authentication", "JWT Token System", "RBAC Authorization",
+            "Elasticsearch Index", "Prometheus Monitoring", "Grafana Dashboard",
+            "Apache Kafka Stream", "RabbitMQ Queue", "Celery Worker",
+            "SQLAlchemy ORM", "Pydantic Validation",
+        ]
+        # Create 20 distinct entities using force to avoid any blocking
+        engine.create_entities_force([
+            {"name": name, "entityType": "concept",
+             "observations": [f"Description for {name}"]}
+            for name in distinct_names
+        ])
+
+        # Add 3 near-duplicates using force
+        engine.create_entities_force([
+            {"name": "PostgreSQL Database v2", "entityType": "concept"},
+            {"name": "Redis Cache v2", "entityType": "concept"},
+            {"name": "Nginx Proxy v2", "entityType": "concept"},
+        ])
+
+        assert len(engine.state.entities) >= 23
+
+        # Use full health check to find duplicates
+        result = engine.get_graph_health(full=True)
+
+        assert result["summary"]["duplicate_groups"] >= 1, (
+            "Should detect at least one group of near-duplicates"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D22: Cache file exists after shutdown cleanup
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_co_access_cache_written_after_save():
+    """Verify cache file exists after save_co_access_cache()."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine = MemoryEngine(Path(tmpdir), "test-session")
+
+        # Create entities and relations
+        engine.create_entities([
+            {"name": "Alpha", "entityType": "concept"},
+            {"name": "Beta", "entityType": "concept"},
+        ])
+        engine.create_relations([
+            {"from": "Alpha", "to": "Beta", "relationType": "links_to"},
+        ])
+
+        # Trigger co-access by doing a recall
+        engine.recall(depth="medium", focus=["Alpha"])
+
+        # Save co-access cache
+        engine.save_co_access_cache()
+
+        # Check cache file exists
+        cache_file = Path(tmpdir) / "co_access_cache.json"
+        assert cache_file.exists(), "co_access_cache.json should exist after save"
+
+        # Verify it's valid JSON
+        import json
+        with open(cache_file) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D23: hooks.json validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_hooks_json_valid_and_no_user_prompt_submit():
+    """hooks.json should be valid JSON and NOT contain UserPromptSubmit."""
+    import json
+
+    hooks_path = Path(__file__).parent.parent / "mnemograph-claude-code" / "hooks" / "hooks.json"
+    assert hooks_path.exists(), f"hooks.json not found at {hooks_path}"
+
+    with open(hooks_path) as f:
+        data = json.load(f)  # Validates JSON
+
+    assert isinstance(data, dict)
+    assert "hooks" in data
+
+    # UserPromptSubmit should NOT be present (D23 removal)
+    assert "UserPromptSubmit" not in data["hooks"], (
+        "UserPromptSubmit hook should have been removed"
+    )
+
+    # SessionStart and Stop should still be present
+    assert "SessionStart" in data["hooks"]
+    assert "Stop" in data["hooks"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D25: conftest fixtures work correctly
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_conftest_engine_fixture(engine):
+    """Verify the engine conftest fixture provides a working engine."""
+    assert engine is not None
+    assert len(engine.state.entities) == 0
+    assert len(engine.state.relations) == 0
+
+    # Should be functional
+    engine.create_entities([
+        {"name": "FixtureTest", "entityType": "concept",
+         "observations": ["Created via conftest engine"]},
+    ])
+    assert len(engine.state.entities) == 1
+
+
+def test_conftest_populated_engine_fixture(populated_engine):
+    """Verify the populated_engine fixture has pre-populated data."""
+    assert populated_engine is not None
+    assert len(populated_engine.state.entities) == 3
+
+    names = {e.name for e in populated_engine.state.entities.values()}
+    assert "Python" in names
+    assert "Event Sourcing" in names
+    assert "Use Event Sourcing" in names
+
+    assert len(populated_engine.state.relations) >= 1
+
+
+def test_conftest_engine_search(populated_engine):
+    """Verify populated_engine supports search operations."""
+    results = populated_engine.search_graph("python")
+    assert len(results["entities"]) >= 1
+    assert results["entities"][0]["name"] == "Python"

@@ -246,34 +246,60 @@ class MemoryEngine:
         return materialize(events)
 
     def _load_co_access_cache(self) -> None:
-        """Load cached co-access scores into relations.
+        """Load cached co-access data into relations.
 
-        Co-access scores are learned from usage patterns and cached
-        separately from the event-sourced state.
+        Handles both old format (co_access_score) and new format
+        (co_access_density + last_co_access). Old format is migrated
+        via inverse sigmoid to approximate the equivalent density.
         """
         if not self._co_access_cache_path.exists():
             return
 
         try:
+            import math
+            from .constants import CO_ACCESS_SIGMOID_MIDPOINT, CO_ACCESS_SIGMOID_STEEPNESS
+
             cache = json.loads(self._co_access_cache_path.read_text())
             for rel in self.state.relations:
                 if rel.id in cache:
-                    rel.co_access_score = cache[rel.id].get("co_access_score", 0.0)
+                    entry = cache[rel.id]
+                    if "co_access_density" in entry:
+                        # New format
+                        rel.co_access_density = entry["co_access_density"]
+                        if entry.get("last_co_access"):
+                            rel.last_co_access = datetime.fromisoformat(
+                                entry["last_co_access"]
+                            )
+                    elif "co_access_score" in entry:
+                        # Old format: convert score to density via inverse sigmoid
+                        score = entry["co_access_score"]
+                        if 0 < score < 1:
+                            rel.co_access_density = (
+                                CO_ACCESS_SIGMOID_MIDPOINT
+                                - math.log(1.0 / score - 1.0) / CO_ACCESS_SIGMOID_STEEPNESS
+                            )
+                        elif score >= 1:
+                            # Saturated — use a high density value
+                            rel.co_access_density = CO_ACCESS_SIGMOID_MIDPOINT * 2
+                        # score == 0 → density stays at default 0.0
         except (json.JSONDecodeError, ValueError):
             # Corrupted cache, ignore
             pass
 
     def save_co_access_cache(self) -> None:
-        """Save co-access scores to cache file.
+        """Save co-access density data to cache file.
 
         Call this periodically or on shutdown to persist learned scores.
         """
         cache = {}
         for rel in self.state.relations:
-            if rel.co_access_score > 0:
-                cache[rel.id] = {
-                    "co_access_score": rel.co_access_score,
+            if rel.co_access_density > 0:
+                entry: dict = {
+                    "co_access_density": rel.co_access_density,
                 }
+                if rel.last_co_access is not None:
+                    entry["last_co_access"] = rel.last_co_access.isoformat()
+                cache[rel.id] = entry
 
         self._co_access_cache_path.write_text(json.dumps(cache, indent=2))
 
@@ -1078,7 +1104,7 @@ class MemoryEngine:
             self.save_co_access_cache()
 
             # Collect entity IDs from result for prose linearization
-            matched_entity_ids = self._collect_entity_ids_from_context(result, active_state)
+            matched_entity_ids = result.entity_ids
 
         elif depth == "deep":
             tokens = max_tokens or DEEP_CONTEXT_TOKENS
@@ -1113,7 +1139,7 @@ class MemoryEngine:
             self.save_co_access_cache()
 
             # Collect entity IDs from result for prose linearization
-            matched_entity_ids = self._collect_entity_ids_from_context(result, active_state)
+            matched_entity_ids = result.entity_ids
 
         else:
             raise ValueError(f"Invalid depth: {depth}. Use 'shallow', 'medium', or 'deep'.")
@@ -1146,31 +1172,6 @@ class MemoryEngine:
                 "relation_count": result.relation_count,
             }
 
-    def _collect_entity_ids_from_context(self, result, active_state) -> set[str]:
-        """Extract entity IDs that were included in a context result.
-
-        This parses the result content to find entity names and map them back to IDs.
-        """
-        entity_ids: set[str] = set()
-
-        # The result.content is markdown with ### EntityName headers
-        # We need to extract these names and map to IDs
-        for line in result.content.split("\n"):
-            if line.startswith("### "):
-                # Parse "### EntityName (type)"
-                header = line[4:].strip()
-                if " (" in header:
-                    name = header.rsplit(" (", 1)[0]
-                else:
-                    name = header
-
-                # Find entity by name
-                for eid, entity in active_state.entities.items():
-                    if entity.name == name:
-                        entity_ids.add(eid)
-                        break
-
-        return entity_ids
 
     def _format_structure(self, structure: dict) -> str:
         """Format structure-only results as readable markdown."""
@@ -1928,15 +1929,18 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
 
         return redirected
 
-    def get_graph_health(self) -> dict:
+    def get_graph_health(self, full: bool = False) -> dict:
         """Assess overall health of the knowledge graph.
+
+        Args:
+            full: If True, include expensive duplicate detection (O(n*k)). Default False for fast O(n) checks.
 
         Returns:
             Health report with issues and recommendations
         """
         # Collect issues
         orphans = self.find_orphans()
-        duplicates = self._find_duplicate_groups()
+        duplicates = self._find_duplicate_groups() if full else []
         overloaded = self._find_overloaded_entities()
         weak_relations = self._find_weak_relations()
         cluster_count = self._count_connected_components()
@@ -1965,8 +1969,30 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
             "recommendations": recommendations,
         }
 
+    def _get_similar_candidates(self, entity_name: str, limit: int = 10) -> list[str]:
+        """Get candidate entity IDs for similarity comparison using vector search.
+
+        Args:
+            entity_name: Name of entity to find candidates for
+            limit: Max candidates to return (default 10)
+
+        Returns:
+            List of entity IDs that are semantically similar (top-k from vector search)
+        """
+        try:
+            # Use vector search to narrow candidates from O(n) to O(k)
+            vector_results = self.vector_index.search(entity_name, limit=limit)
+            return [eid for eid, _score in vector_results]
+        except (RuntimeError, ValueError, TypeError, AttributeError):
+            # Vector index unavailable - fall back to all entities
+            return list(self.state.entities.keys())
+
     def _find_duplicate_groups(self, threshold: float = DUPLICATE_DETECTION_THRESHOLD) -> list[dict]:
-        """Find groups of similar entities that may be duplicates."""
+        """Find groups of similar entities that may be duplicates.
+
+        Uses vector search to narrow candidates from O(n²) to O(n*k) where k≈10.
+        Falls back to brute-force if vector index unavailable.
+        """
         duplicates = []
         seen_ids: set[str] = set()
 
@@ -1974,8 +2000,37 @@ TIP: Start with recall(depth='shallow') to see what's known, then remember() or 
             if eid in seen_ids:
                 continue
 
-            similar = self.find_similar(entity.name, threshold=threshold)
+            # Get top-k semantically similar candidates via vector search
+            candidate_ids = self._get_similar_candidates(entity.name, limit=10)
+
+            # Compute full combined_similarity only for candidates
+            similar = []
+            entity_lower = entity.name.lower().strip()
+            entity_tokens = set(entity_lower.split())
+
+            for candidate_id in candidate_ids:
+                if candidate_id == eid or candidate_id in seen_ids:
+                    continue
+                if candidate_id not in self.state.entities:
+                    continue
+
+                candidate = self.state.entities[candidate_id]
+                similarity = self.similarity.combined_similarity(
+                    entity.name, candidate.name, entity_lower, entity_tokens
+                )
+
+                if similarity >= threshold:
+                    similar.append({
+                        "id": candidate_id,
+                        "name": candidate.name,
+                        "type": candidate.type,
+                        "similarity": round(similarity, 2),
+                        "observation_count": len(candidate.observations),
+                    })
+
             if similar:
+                # Sort by similarity score descending
+                similar.sort(key=lambda x: x["similarity"], reverse=True)
                 duplicates.append({
                     "entity": entity.name,
                     "similar_to": [s["name"] for s in similar],
