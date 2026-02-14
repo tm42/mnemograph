@@ -15,19 +15,15 @@ from mcp.types import TextContent, Tool
 
 from .engine import MemoryEngine
 
-# --- Tools delegated to subagents (hidden from list_tools, but callable) ---
+# --- Tools hidden from list_tools (but still callable) ---
+# NOTE: Write tools (remember, add_observations, etc.) were previously hidden here
+# to force usage through the memory-store subagent. Removed because subagents also
+# discover tools via list_tools() — hiding them made writes impossible for everyone.
 HIDDEN_TOOLS = {
-    # Agent-internal (memory-store wraps these)
-    "find_similar",
-    "remember",
-    "add_observations",
-    "create_relations",
-    "suggest_relations",
-    "set_relation_importance",
-    # Redundant (memory-store uses remember)
+    # Redundant low-level tools (remember is the preferred interface)
     "create_entities",
     "create_entities_force",
-    # Admin read-only
+    # Admin-only
     "get_relation_weight",
 }
 

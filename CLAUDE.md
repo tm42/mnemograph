@@ -162,9 +162,15 @@ interface MemoryEvent {
 
 ---
 
-## Implementation Status (v0.5.0)
+## Implementation Status (v0.5.1)
 
 **Completed**: Event sourcing, entity types, vector index, tiered retrieval, unified CLI (`mnemograph`), time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
+
+**v0.5.1 Changes** (Feb 2026 — bugfixes):
+- Fix `recall` focus parameter ignored — structure-only early return now skipped when `focus` is provided
+- Unhide write tools — `remember`, `add_observations`, `create_relations`, `find_similar`, `suggest_relations`, `set_relation_importance` now exposed via `list_tools()` (subagents couldn't call hidden tools)
+- Fix `visualize-memory-graph` command — use `uvx mnemograph` instead of `cd ${CLAUDE_PLUGIN_ROOT}/.. && uv run` (broke when plugin installed via marketplace cache)
+- Version alignment — plugin pyproject.toml and marketplace.json synced to main version
 
 **v0.5.0 Changes** (Feb 2026 Review — 29 decisions across 3 tiers):
 - Engine decomposition — extracted 27 read-only methods into `query.py` QueryService
@@ -172,7 +178,7 @@ interface MemoryEvent {
 - Branch pruning — stale IDs removed from branch filters after destructive operations
 - SQL-indexed time queries — `events_between()` uses `idx_events_ts` instead of full scan
 - `restore_to` marker event — replaces clear+recreate restoration (1 event vs N)
-- Subagent tool hiding — memory-store/memory-init tools hidden from main agent surface
+- Subagent tool hiding — memory-store/memory-init tools hidden from main agent surface (reverted in v0.5.1)
 - Leaky integrator co-access — replaces additive model that converged to uniformity
 - Batch embedding — `reindex_all()` uses `model.encode(batch_size=32)`
 - Graceful shutdown — SIGTERM/SIGINT flush caches before exit

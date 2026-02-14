@@ -1,6 +1,6 @@
 [project]
 name = "mnemograph-claude-code"
-version = "0.3.0"
+version = "0.5.1"
 description = "Claude Code hook plugin for mnemograph persistent memory"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -10,7 +10,7 @@ authors = [
 ]
 
 dependencies = [
-    "mnemograph>=0.3.0",
+    "mnemograph>=0.5.1",
 ]
 
 [project.optional-dependencies]

@@ -454,7 +454,9 @@ class QueryService:
             tokens = max_tokens or MEDIUM_CONTEXT_TOKENS
 
             # First, do a structure search to estimate size
-            if query:
+            # Skip early return when focus is provided — the caller has already
+            # narrowed what they want, so the broad estimate is irrelevant.
+            if query and not focus:
                 structure_result = self.search_structure(query, limit=20)
                 estimated_tokens = structure_result["estimated_full_tokens"]
 

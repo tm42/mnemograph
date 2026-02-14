@@ -30,16 +30,16 @@ Before running the visualization, ask the user which memory scope and mode they 
 
 2. **Run the visualization** based on their choices:
 
-   Use the Bash tool to run the `mnemograph graph` command. The mnemograph project is located at `${CLAUDE_PLUGIN_ROOT}/..` (the parent of this plugin directory).
+   Use the Bash tool to run the `mnemograph graph` command via `uvx`.
 
    **Commands by choice combination:**
 
    | Scope | Mode | Command |
    |-------|------|---------|
-   | Global | Live | `cd ${CLAUDE_PLUGIN_ROOT}/.. && uv run mnemograph --global graph --watch` |
-   | Global | Export | `cd ${CLAUDE_PLUGIN_ROOT}/.. && uv run mnemograph --global graph --export ~/mnemograph-export.html` |
-   | Project | Live | `cd ${CLAUDE_PLUGIN_ROOT}/.. && uv run mnemograph graph --watch` |
-   | Project | Export | `cd ${CLAUDE_PLUGIN_ROOT}/.. && uv run mnemograph graph --export ./mnemograph-export.html` |
+   | Global | Live | `uvx mnemograph --global graph --watch` |
+   | Global | Export | `uvx mnemograph --global graph --export ~/mnemograph-export.html` |
+   | Project | Live | `uvx mnemograph graph --watch` |
+   | Project | Export | `uvx mnemograph graph --export ./mnemograph-export.html` |
 
    **Run in background** for live view mode so the user can continue working while the server runs.
 
