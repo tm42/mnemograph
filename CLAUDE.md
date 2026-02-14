@@ -162,9 +162,22 @@ interface MemoryEvent {
 
 ---
 
-## Implementation Status (v0.4.2)
+## Implementation Status (v0.5.0)
 
 **Completed**: Event sourcing, entity types, vector index, tiered retrieval, unified CLI (`mnemograph`), time travel, edge weights, graph visualization, `remember()`, first-run onboarding, prose recall format, branching
+
+**v0.5.0 Changes** (Feb 2026 Review — 29 decisions across 3 tiers):
+- Engine decomposition — extracted 27 read-only methods into `query.py` QueryService
+- Constants consolidation — all tunable parameters centralized in `constants.py`
+- Branch pruning — stale IDs removed from branch filters after destructive operations
+- SQL-indexed time queries — `events_between()` uses `idx_events_ts` instead of full scan
+- `restore_to` marker event — replaces clear+recreate restoration (1 event vs N)
+- Subagent tool hiding — memory-store/memory-init tools hidden from main agent surface
+- Leaky integrator co-access — replaces additive model that converged to uniformity
+- Batch embedding — `reindex_all()` uses `model.encode(batch_size=32)`
+- Graceful shutdown — SIGTERM/SIGINT flush caches before exit
+- Dead code removal — `Entity.access_count`, `Observation.confidence`, `get_hot_entities()`
+- Conftest fixtures — shared `engine`/`state` fixtures, 397 tests at 85% coverage
 
 **v0.4.2 Changes** (Audit Refactor):
 - Constants module — centralized magic numbers in `constants.py` for easy tuning
