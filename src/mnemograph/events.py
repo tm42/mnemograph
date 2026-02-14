@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -215,6 +216,29 @@ class EventStore:
         )
 
         return [self._row_to_event(row) for row in cursor]
+
+    def read_between(
+        self, start_ts: datetime, end_ts: datetime
+    ) -> list[MemoryEvent]:
+        """Read events in a time range using SQL index.
+
+        Uses idx_events_ts for efficient range queries instead of
+        loading all events and filtering in Python.
+
+        Args:
+            start_ts: Start of time range (inclusive)
+            end_ts: End of time range (inclusive)
+
+        Returns:
+            Events within the range, ordered by timestamp then ID.
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, ts, op, session_id, source, data FROM events "
+            "WHERE ts >= ? AND ts <= ? ORDER BY ts, id",
+            (start_ts.isoformat(), end_ts.isoformat()),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
 
     def read_by_session(self, session_id: str) -> list[MemoryEvent]:
         """Read all events for a specific session."""

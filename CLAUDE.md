@@ -25,6 +25,7 @@ This is NOT another "remember user likes dark mode" system. This is a **shared k
 **Layers**:
 - **MCP Server** (`server.py`): Handles stdio transport, defines tool schemas
 - **Memory Engine** (`engine.py`): Orchestrates all modules
+- **Query Service** (`query.py`): Read-only queries — recall, search, health checks, weight inspection
 - **Event Store** (`events.py`): SQLite-backed append-only event log (source of truth)
 - **State** (`state.py`): Materialized graph computed from events
 - **Vectors** (`vectors.py`): sqlite-vec embeddings in same database
@@ -38,6 +39,24 @@ This is NOT another "remember user likes dark mode" system. This is a **shared k
 **Storage** (`<project>/.claude/memory/`):
 - `mnemograph.db` — SQLite database (events + vectors in one file)
 - `state.json` — Cached materialized state
+
+### Event-Sourcing Boundary
+
+**Event-sourced (SQLite, append-only — source of truth)**:
+- Entities, relations, observations (CRUD events)
+- Explicit relation weights (`update_weight` event)
+- Graph clears and restores (`clear_graph`, `restore_to` events)
+
+**Computed/cached (recreatable, not event-sourced)**:
+- Vector embeddings (sentence-transformers → sqlite-vec, rebuilt via `reindex_all`)
+- Recency scores (computed on-the-fly from timestamps)
+- Co-access density (JSON cache, learned from usage patterns)
+- Materialized state (`state.json`, rebuilt from events via `materialize()`)
+
+**Separate storage (JSON files, not event-sourced)**:
+- Branch filters (`branches/*.json` — entity/relation ID sets)
+- Current branch pointer (`branches/_current`)
+- Branches are NOT restored by time travel operations
 
 ---
 

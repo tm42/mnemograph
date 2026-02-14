@@ -768,3 +768,169 @@ class TestEngineAutoInclude:
         result = engine.open_nodes(["Python"])
         assert len(result["entities"]) == 1
         assert result["entities"][0]["name"] == "Python"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D16: Branch Pruning Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestBranchPruning:
+    """Tests for prune_stale_ids after destructive operations."""
+
+    def test_delete_entity_prunes_branch(self):
+        """Deleting an entity should remove its ID from branches."""
+        from mnemograph.engine import MemoryEngine
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test-session")
+
+            # Create entities and a branch containing them
+            engine.create_entities([
+                {"name": "Alpha", "entityType": "concept"},
+                {"name": "Beta", "entityType": "concept"},
+            ])
+            entities = engine.get_recent_entities(limit=10)
+            entity_map = {e.name: e.id for e in entities}
+
+            engine.branch_manager.create(
+                "project/prune-test",
+                seed_entities=["Alpha", "Beta"],
+                depth=0,
+            )
+
+            # Verify entity is in branch
+            branch = engine.branch_manager.get("project/prune-test")
+            assert entity_map["Alpha"] in branch.entity_ids
+
+            # Delete entity — should trigger prune
+            engine.delete_entities([entity_map["Alpha"]])
+
+            # Reload branch and check
+            branch = engine.branch_manager.get("project/prune-test")
+            assert entity_map["Alpha"] not in branch.entity_ids
+            assert entity_map["Beta"] in branch.entity_ids
+
+    def test_clear_graph_prunes_all_branches(self):
+        """Clearing the graph should empty all branch entity_ids."""
+        from mnemograph.engine import MemoryEngine
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test-session")
+
+            engine.create_entities([
+                {"name": "PostgreSQL Database", "entityType": "concept"},
+                {"name": "Redis Cache System", "entityType": "concept"},
+            ])
+
+            engine.branch_manager.create(
+                "project/clear-test",
+                seed_entities=["PostgreSQL Database", "Redis Cache System"],
+                depth=0,
+            )
+
+            branch = engine.branch_manager.get("project/clear-test")
+            assert len(branch.entity_ids) == 2
+
+            # Clear graph
+            engine.clear_graph(reason="testing prune")
+
+            branch = engine.branch_manager.get("project/clear-test")
+            assert len(branch.entity_ids) == 0
+            assert len(branch.relation_ids) == 0
+
+    def test_restore_state_prunes_branches(self):
+        """Restoring to earlier state should prune entities added later."""
+        from mnemograph.engine import MemoryEngine
+        import time
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test-session")
+
+            # Create entity before snapshot
+            engine.create_entities([
+                {"name": "Survivor", "entityType": "concept"},
+            ])
+
+            time.sleep(0.02)
+            from datetime import datetime, timezone
+            snapshot_ts = datetime.now(timezone.utc)
+            time.sleep(0.02)
+
+            # Create entity after snapshot
+            engine.create_entities([
+                {"name": "DoesNotSurvive", "entityType": "concept"},
+            ])
+
+            # Create branch with both
+            engine.branch_manager.create(
+                "project/restore-test",
+                seed_entities=["Survivor", "DoesNotSurvive"],
+                depth=0,
+            )
+            branch = engine.branch_manager.get("project/restore-test")
+            assert len(branch.entity_ids) == 2
+
+            # Restore to before second entity
+            engine.restore_state_at(snapshot_ts.isoformat())
+
+            branch = engine.branch_manager.get("project/restore-test")
+            # Only Survivor should remain
+            assert len(branch.entity_ids) == 1
+
+    def test_prune_noop_when_no_stale_ids(self, branch_manager, sample_state):
+        """Pruning when no IDs are stale should not modify branch files."""
+        branch_manager.create("project/stable", ["e1", "e2"], depth=0)
+
+        # Get branch file modification time
+        path = branch_manager._branch_path("project/stable")
+        import os
+        mtime_before = os.path.getmtime(path)
+
+        import time
+        time.sleep(0.02)
+
+        # Prune with all IDs still valid
+        branch_manager.prune_stale_ids(sample_state)
+
+        mtime_after = os.path.getmtime(path)
+        assert mtime_before == mtime_after, "Branch file should not be rewritten when no stale IDs"
+
+    def test_main_branch_skipped_during_prune(self, branch_manager, sample_state):
+        """prune_stale_ids should not attempt to prune main branch."""
+        # This should not raise even though main has no JSON file
+        branch_manager.prune_stale_ids(sample_state)
+
+    def test_prune_removes_stale_relation_ids(self):
+        """Pruning should remove relation IDs that no longer exist in state."""
+        from mnemograph.engine import MemoryEngine
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = MemoryEngine(Path(tmpdir), "test-session")
+
+            engine.create_entities([
+                {"name": "NodeA", "entityType": "concept"},
+                {"name": "NodeB", "entityType": "concept"},
+            ])
+            engine.create_relations([
+                {"from": "NodeA", "to": "NodeB", "relationType": "links"},
+            ])
+
+            # Create branch with entity and relation
+            engine.branch_manager.create(
+                "project/rel-prune",
+                seed_entities=["NodeA"],
+                depth=1,
+            )
+
+            branch = engine.branch_manager.get("project/rel-prune")
+            assert len(branch.relation_ids) >= 1
+
+            # Delete relation by removing one entity
+            entities = engine.get_recent_entities(limit=10)
+            b_id = next(e.id for e in entities if e.name == "NodeB")
+            engine.delete_entities([b_id])
+
+            # Relation should be pruned from branch
+            branch = engine.branch_manager.get("project/rel-prune")
+            assert len(branch.relation_ids) == 0

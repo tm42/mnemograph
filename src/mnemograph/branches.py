@@ -627,6 +627,37 @@ class BranchManager:
         }
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Maintenance
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def prune_stale_ids(self, state: "GraphState") -> None:
+        """Remove entity/relation IDs from branches that no longer exist in state.
+
+        Called after destructive operations (delete, clear, restore) to keep
+        branch filters accurate.
+        """
+        valid_entity_ids = set(state.entities.keys())
+        valid_relation_ids = {r.id for r in state.relations}
+
+        for branch_file in self.branches_dir.rglob("*.json"):
+            try:
+                branch = Branch.from_dict(json.loads(branch_file.read_text()))
+            except (json.JSONDecodeError, KeyError, TypeError, OSError) as e:
+                logger.warning(f"Skipping malformed branch file {branch_file.name}: {e}")
+                continue
+
+            if branch.name == "main":
+                continue
+
+            orig_e = len(branch.entity_ids)
+            orig_r = len(branch.relation_ids)
+            branch.entity_ids &= valid_entity_ids
+            branch.relation_ids &= valid_relation_ids
+
+            if len(branch.entity_ids) != orig_e or len(branch.relation_ids) != orig_r:
+                self._save_branch(branch)
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Filtered State
     # ─────────────────────────────────────────────────────────────────────────
 

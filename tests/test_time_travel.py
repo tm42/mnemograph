@@ -60,6 +60,10 @@ class MockEventStore:
     def read_all(self) -> list[MemoryEvent]:
         return self._events
 
+    def read_between(self, start_ts: datetime, end_ts: datetime) -> list[MemoryEvent]:
+        """Filter events in a time range."""
+        return [e for e in self._events if start_ts <= e.ts <= end_ts]
+
 
 # --- state_at() Tests ---
 

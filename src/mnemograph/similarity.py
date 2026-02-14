@@ -15,9 +15,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Similarity tuning constants
-DEFAULT_SIMILARITY_THRESHOLD = 0.7
-AFFIX_MATCH_BONUS = 0.2  # Applied as bonus * 0.1 = max 0.02 boost
+from .constants import DEFAULT_SIMILARITY_THRESHOLD, AFFIX_MATCH_BONUS
 
 
 class SimilarityChecker:

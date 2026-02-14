@@ -84,9 +84,7 @@ class TimeTraveler:
         """
         start_ts = self._normalize_timestamp(start)
         end_ts = self._normalize_timestamp(end) if end else datetime.now(timezone.utc)
-
-        events = self._get_event_store().read_all()
-        return [e for e in events if start_ts <= e.ts <= end_ts]
+        return self._get_event_store().read_between(start_ts, end_ts)
 
     def diff_between(
         self,
